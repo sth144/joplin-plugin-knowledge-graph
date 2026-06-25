@@ -5,6 +5,7 @@
 	"scripts": {
 		"dist": "webpack --env joplin-plugin-config=buildMain && webpack --env joplin-plugin-config=buildExtraScripts && webpack --env joplin-plugin-config=createArchive",
 		"build": "webpack",
+		"install-local": "npm run dist && cp publish/com.seanhinds.knowledge-graph.jpl \"${HOME}/.config/joplin-desktop/plugins/com.seanhinds.knowledge-graph.jpl\" && echo 'Installed to Joplin plugins dir — restart Joplin to load.'",
 		"updateVersion": "webpack --env joplin-plugin-config=updateVersion"
 	},
 	"keywords": [

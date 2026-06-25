@@ -54,13 +54,20 @@ The plugin runs in two isolated JavaScript environments that cannot share import
 
 ### Communication
 
-The two processes communicate exclusively via `postMessage`:
+Joplin **dialogs have no message channel** — `joplin.views.dialogs.onMessage` does
+not exist (only `joplin.views.panels` exposes `onMessage`/`postMessage`). Calling it
+throws an uncaught exception in `onStart`, which aborts registration of everything
+after it (toolbar button, menu item) and makes Joplin auto-open the dev tools.
 
-1. Webview sends: `webviewApi.postMessage({ type: 'requestGraphData' })`
-2. Plugin process responds from the `onMessage` handler in `index.ts` by returning
-   the pre-built `GraphData` object.
+So data is passed one-way via the DOM:
 
-The plugin builds graph data before opening the dialog so the response is immediate.
+1. The command's `execute` builds `GraphData`, then `buildDialogHtml` embeds it as a
+   non-executed `<script type="application/json" id="kg-data">` block and calls
+   `setHtml` before `open`.
+2. The webview's `init()` reads and `JSON.parse`s `#kg-data` from the DOM.
+
+The JSON block uses `type="application/json"` (not executed, so CSP-allowed), and
+`"<"` is escaped to `<` so a `</script>` inside note content can't break out.
 
 ## The `api/` Directory
 
@@ -175,23 +182,36 @@ into a single edge by accumulating weight and appending ticket keys to `title`.
 
 There is no automated test suite. To test changes:
 
-1. Run `npm run dist` to build and package.
-2. In Joplin desktop: **Settings > Plugins > Development plugins**, add this project's
-   directory path.
-3. Restart Joplin.
-4. Click the toolbar button or use **Tools > Show Knowledge Graph**.
-5. Check the Joplin log (Help > Open Profile Directory > log.txt) for plugin process
+1. Run `npm run install-local` — builds the `.jpl` and copies it into the Joplin
+   plugins dir (`~/.config/joplin-desktop/plugins/`) as a normally-installed plugin.
+2. Restart Joplin.
+3. Click the toolbar button or use **Tools > Show Knowledge Graph**.
+4. Check the Joplin log (Help > Open Profile Directory > log.txt) for plugin process
    output — `buildGraphData` logs progress via `console.info`.
 
 For webview errors, open the developer tools in the dialog (right-click > Inspect,
 if enabled in your Joplin build).
 
+### Don't use the "Development plugins" path
+
+Joplin's **Settings > Plugins > Development plugins** loads a plugin in *dev mode*
+(`devMode: true`), and Joplin **unconditionally auto-opens detached dev tools 3s
+after a dev-mode plugin loads** — there is no plugin-side flag to suppress this.
+Use `npm run install-local` (normal install, `devMode: false`) instead, and keep the
+Development plugins path **blank**. Loading the same plugin id via both the dev path
+and an installed `.jpl` causes a conflict.
+
 ## Common Pitfalls
 
 - **Importing plugin-process modules in the webview.** `graph.ts` cannot import from
-  `graph-builder.ts` or `tfidf.ts`. Data must travel via `postMessage`.
+  `graph-builder.ts` or `tfidf.ts`. Data must travel via the embedded `#kg-data` block
+  (see Communication).
 - **Using `externals` for the `api` module.** See the `api/` section above — use
   `resolve.alias` instead.
+- **Calling `joplin.views.dialogs.onMessage`.** It does not exist; it throws and
+  aborts `onStart`. See the Communication section — pass data via the embedded
+  `#kg-data` JSON block instead. (The `api/index.ts` dialog stub deliberately omits
+  `onMessage` to catch this at compile time.)
 - **Adding native Node.js modules as dependencies.** The plugin sandbox restricts
   native modules. Keep dependencies pure-JS.
 - **`tsconfig.json` excludes `src/webview/**`** — the webview is compiled by

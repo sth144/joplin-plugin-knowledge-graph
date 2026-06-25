@@ -1,18 +1,15 @@
 /**
  * Webview script for the knowledge graph dialog.
  *
- * Runs inside the Joplin webview sandbox. Communicates with the plugin
- * process via webviewApi.postMessage() to fetch graph data.
+ * Runs inside the Joplin webview sandbox. Joplin dialogs have no message
+ * channel (unlike panels), so the plugin embeds the graph data in the dialog
+ * HTML as a JSON block (id="kg-data") which this script reads from the DOM.
  *
  * vis-network is bundled via webpack (no CDN dependency).
  */
 
 import { DataSet } from 'vis-data';
 import { Network } from 'vis-network';
-
-declare const webviewApi: {
-	postMessage(message: any): Promise<any>;
-};
 
 interface VisNode {
 	id: number;
@@ -46,11 +43,12 @@ async function init(): Promise<void> {
 	const loadingText = document.getElementById('loading-text')!;
 
 	try {
-		// Request graph data from plugin process
+		// Read graph data embedded in the dialog HTML by the plugin
 		loadingText.textContent = 'Building knowledge graph...';
-		const graphData: GraphData = await webviewApi.postMessage({
-			type: 'requestGraphData',
-		});
+		const dataEl = document.getElementById('kg-data');
+		const graphData: GraphData | null = dataEl
+			? JSON.parse(dataEl.textContent || 'null')
+			: null;
 
 		if (!graphData || !graphData.nodes) {
 			loadingText.textContent = 'Error: No graph data received.';

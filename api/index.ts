@@ -27,7 +27,6 @@ interface JoplinViewsDialogs {
 	setButtons(handle: ViewHandle, buttons: DialogButton[]): Promise<void>;
 	setFitToContent(handle: ViewHandle, fit: boolean): Promise<void>;
 	open(handle: ViewHandle): Promise<any>;
-	onMessage(handle: ViewHandle, callback: (message: any) => any): Promise<void>;
 }
 
 interface JoplinViewsPanels {
