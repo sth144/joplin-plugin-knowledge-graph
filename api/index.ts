@@ -1,7 +1,9 @@
 /**
- * Stub for the Joplin plugin API module.
- * At runtime, 'api' is provided by Joplin's plugin host.
- * This file provides type declarations for TypeScript compilation.
+ * Joplin plugin API stub.
+ *
+ * At runtime, the `joplin` global is injected by the plugin sandbox.
+ * This module re-exports it so `import joplin from 'api'` works
+ * at both compile time (type checking) and runtime (global reference).
  */
 
 import { ViewHandle } from './types';
@@ -80,5 +82,7 @@ interface Joplin {
 	plugins: JoplinPlugins;
 }
 
-declare const joplin: Joplin;
+// Reference the global `joplin` object injected by the plugin sandbox
+const joplin: Joplin = (global as any).joplin;
+
 export default joplin;

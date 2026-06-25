@@ -36,6 +36,9 @@ function buildMainConfig() {
 		entry: './src/index.ts',
 		target: 'node',
 		resolve: {
+			alias: {
+				api: path.resolve(rootDir, 'api'),
+			},
 			extensions: ['.ts', '.js'],
 		},
 		module: {
@@ -59,10 +62,6 @@ function buildMainConfig() {
 				],
 			}),
 		],
-		externals: {
-			api: 'commonjs api',
-			'api/types': 'commonjs api/types',
-		},
 	};
 }
 
@@ -119,12 +118,14 @@ function createArchiveConfig() {
 	return {
 		mode: 'production',
 		entry: './src/index.ts',
-		resolve: { extensions: ['.ts', '.js'] },
+		resolve: {
+			alias: { api: path.resolve(rootDir, 'api') },
+			extensions: ['.ts', '.js'],
+		},
 		module: {
 			rules: [{ test: /\.ts$/, use: 'ts-loader', exclude: /node_modules/ }],
 		},
 		output: { filename: '_archive_stub.js', path: distDir },
-		externals: { api: 'commonjs api', 'api/types': 'commonjs api/types' },
 		plugins: [{
 			apply(compiler) {
 				compiler.hooks.done.tapPromise('CreateJplArchive', async () => {
