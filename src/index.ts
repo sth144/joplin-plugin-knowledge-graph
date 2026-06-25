@@ -62,7 +62,7 @@ joplin.plugins.register({
 		await joplin.commands.register({
 			name: 'showKnowledgeGraph',
 			label: 'Show Knowledge Graph',
-			iconName: 'fas fa-project-diagram',
+			iconName: 'fas fa-sitemap',
 			execute: async () => {
 				// Build graph data before opening dialog
 				graphData = await buildGraphData((msg: string) => {
