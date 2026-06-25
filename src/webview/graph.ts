@@ -4,14 +4,16 @@
  * Runs inside the Joplin webview sandbox. Communicates with the plugin
  * process via webviewApi.postMessage() to fetch graph data.
  *
- * vis-network is loaded from a bundled copy (see webpack extraScripts).
+ * vis-network is bundled via webpack (no CDN dependency).
  */
+
+import { DataSet } from 'vis-data';
+import { Network } from 'vis-network';
 
 declare const webviewApi: {
 	postMessage(message: any): Promise<any>;
 };
 
-// vis-network types (minimal subset we use)
 interface VisNode {
 	id: number;
 	label: string;
@@ -39,31 +41,11 @@ interface GraphData {
 	folderColors: Record<string, string>;
 }
 
-// Load vis-network from CDN (since we can't bundle native modules)
-function loadVisNetwork(): Promise<void> {
-	return new Promise((resolve, reject) => {
-		// Check if already loaded
-		if ((window as any).vis) {
-			resolve();
-			return;
-		}
-		const script = document.createElement('script');
-		script.src = 'https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js';
-		script.onload = () => resolve();
-		script.onerror = () => reject(new Error('Failed to load vis-network'));
-		document.head.appendChild(script);
-	});
-}
-
 async function init(): Promise<void> {
 	const loading = document.getElementById('loading')!;
 	const loadingText = document.getElementById('loading-text')!;
 
 	try {
-		// Load vis-network
-		loadingText.textContent = 'Loading visualization library...';
-		await loadVisNetwork();
-
 		// Request graph data from plugin process
 		loadingText.textContent = 'Building knowledge graph...';
 		const graphData: GraphData = await webviewApi.postMessage({
@@ -123,7 +105,6 @@ function buildFilterPanel(folderColors: Record<string, string>): void {
 }
 
 function renderGraph(graphData: GraphData): void {
-	const vis = (window as any).vis;
 	const container = document.getElementById('graph-container')!;
 
 	// Assign edge IDs
@@ -132,10 +113,10 @@ function renderGraph(graphData: GraphData): void {
 		id: `e${i}`,
 	}));
 
-	const nodesDataset = new vis.DataSet(graphData.nodes);
-	const edgesDataset = new vis.DataSet(edgesWithIds);
+	const nodesDataset = new DataSet(graphData.nodes);
+	const edgesDataset = new DataSet(edgesWithIds);
 
-	const network = new vis.Network(
+	const network = new Network(
 		container,
 		{ nodes: nodesDataset, edges: edgesDataset },
 		{
@@ -167,7 +148,11 @@ function renderGraph(graphData: GraphData): void {
 				borderWidthSelected: 3,
 			},
 			edges: {
-				smooth: { type: 'continuous' },
+				smooth: {
+					enabled: true,
+					type: 'continuous',
+					roundness: 0.5,
+				},
 				scaling: { min: 0.5, max: 3 },
 			},
 		},
