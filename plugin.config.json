@@ -1,0 +1,3 @@
+{
+	"extraScripts": ["src/webview/graph.ts"]
+}

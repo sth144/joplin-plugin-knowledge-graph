@@ -1,0 +1,25 @@
+{
+	"name": "joplin-plugin-knowledge-graph",
+	"version": "0.1.0",
+	"description": "Interactive knowledge graph visualization for Joplin notes",
+	"scripts": {
+		"dist": "webpack --env joplin-plugin-config=buildMain && webpack --env joplin-plugin-config=buildExtraScripts && webpack --env joplin-plugin-config=createArchive",
+		"build": "webpack",
+		"updateVersion": "webpack --env joplin-plugin-config=updateVersion"
+	},
+	"keywords": [
+		"joplin-plugin"
+	],
+	"license": "MIT",
+	"devDependencies": {
+		"copy-webpack-plugin": "^11.0.0",
+		"fs-extra": "^11.2.0",
+		"glob": "^10.3.10",
+		"tar": "^6.2.0",
+		"ts-loader": "^9.5.1",
+		"typescript": "^5.3.3",
+		"webpack": "^5.90.1",
+		"webpack-cli": "^5.1.4"
+	},
+	"dependencies": {}
+}

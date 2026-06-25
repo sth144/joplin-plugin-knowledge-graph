@@ -1,0 +1,10 @@
+{
+	"manifest_version": 1,
+	"id": "com.seanhinds.knowledge-graph",
+	"app_min_version": "2.6",
+	"version": "0.1.0",
+	"name": "Knowledge Graph",
+	"description": "Interactive knowledge graph visualization of all notes, connected by content similarity, shared references, and internal links.",
+	"author": "Sean Hinds",
+	"homepage_url": "https://github.com/seanhinds/joplin-plugin-knowledge-graph"
+}

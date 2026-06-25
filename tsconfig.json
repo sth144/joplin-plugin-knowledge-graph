@@ -1,0 +1,23 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"target": "ES2020",
+		"module": "commonjs",
+		"lib": ["ES2020"],
+		"moduleResolution": "node",
+		"baseUrl": ".",
+		"paths": {
+			"api": ["./api/index"],
+			"api/*": ["./api/*"]
+		},
+		"rootDir": ".",
+		"outDir": "dist/",
+		"esModuleInterop": true,
+		"resolveJsonModule": true,
+		"declaration": true,
+		"sourceMap": true,
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "api/**/*.ts"],
+	"exclude": ["src/webview/**/*"]
+}
