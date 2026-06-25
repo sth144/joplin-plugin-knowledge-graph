@@ -53,7 +53,6 @@ function buildMainConfig() {
 		output: {
 			filename: 'index.js',
 			path: distDir,
-			libraryTarget: 'commonjs',
 		},
 		plugins: [
 			new CopyPlugin({
