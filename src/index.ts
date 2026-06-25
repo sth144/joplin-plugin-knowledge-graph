@@ -1,16 +1,18 @@
 import joplin from 'api';
 import { ToolbarButtonLocation } from 'api/types';
-import { buildGraphData } from './graph-builder';
+import { buildGraphData, GraphData } from './graph-builder';
 
 joplin.plugins.register({
 	onStart: async function () {
-		// Register the dialog
+		// Cached graph data, rebuilt each time the dialog opens
+		let graphData: GraphData | null = null;
+
+		// Create the dialog
 		const dialog = await joplin.views.dialogs.create('knowledge-graph-dialog');
 
 		await joplin.views.dialogs.addScript(dialog, './webview/graph.css');
 		await joplin.views.dialogs.addScript(dialog, './webview/graph.js');
 
-		// Set initial HTML (loading state)
 		await joplin.views.dialogs.setHtml(dialog, `
 			<div id="graph-root">
 				<div id="loading">
@@ -43,11 +45,18 @@ joplin.plugins.register({
 		`);
 
 		await joplin.views.dialogs.setFitToContent(dialog, false);
-
-		// Handle messages from the webview
 		await joplin.views.dialogs.setButtons(dialog, [
 			{ id: 'close', title: 'Close' },
 		]);
+
+		// Register the message handler ONCE — the webview calls this
+		// when it initializes to request graph data
+		await joplin.views.dialogs.onMessage(dialog, (message: any) => {
+			if (message.type === 'requestGraphData') {
+				return graphData;
+			}
+			return null;
+		});
 
 		// Register command
 		await joplin.commands.register({
@@ -55,31 +64,25 @@ joplin.plugins.register({
 			label: 'Show Knowledge Graph',
 			iconName: 'fas fa-project-diagram',
 			execute: async () => {
-				// Build graph data before showing dialog
-				const graphData = await buildGraphData((msg: string) => {
+				// Build graph data before opening dialog
+				graphData = await buildGraphData((msg: string) => {
 					console.info(`[knowledge-graph] ${msg}`);
 				});
 
-				// Send data to the webview via a message handler
-				await joplin.views.dialogs.onMessage(dialog, (message: any) => {
-					if (message.type === 'requestGraphData') {
-						return graphData;
-					}
-					return null;
-				});
-
+				// Open the dialog — the webview's init() will fire
+				// and request graphData via postMessage
 				await joplin.views.dialogs.open(dialog);
 			},
 		});
 
-		// Add toolbar button
+		// Toolbar button
 		await joplin.views.toolbarButtons.create(
 			'knowledge-graph-button',
 			'showKnowledgeGraph',
 			ToolbarButtonLocation.NoteToolbar,
 		);
 
-		// Add menu item under Tools
+		// Tools menu item
 		await joplin.views.menuItems.create(
 			'knowledge-graph-menu',
 			'showKnowledgeGraph',
