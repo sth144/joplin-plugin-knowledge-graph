@@ -109,6 +109,10 @@ function buildExtraScriptsConfig() {
 		output: {
 			filename: '[name].js',
 			path: distDir,
+			iife: true,
+			library: {
+				type: 'window',
+			},
 		},
 	};
 }
