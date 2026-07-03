@@ -7,6 +7,9 @@ import joplin from 'api';
 import { computeSimilarityEdges, stripMarkdown } from './tfidf';
 
 const SIMILARITY_THRESHOLD = 0.15;
+// Cap the raw markdown embedded per node so the dialog payload stays bounded.
+// The pinned popup shows this; the "Open note" link reaches the full note.
+const MAX_BODY_CHARS = 4000;
 const JIRA_PATTERN = /\b([A-Z]{2,10}-\d+)\b/g;
 const INTERNAL_LINK_PATTERN = /\[.*?\]\(:\/([a-f0-9]{32})\)/g;
 
@@ -38,6 +41,8 @@ export interface GraphNode {
 	size: number;
 	notebook: string;
 	preview: string;
+	noteId: string;
+	body: string;
 }
 
 export interface GraphEdge {
@@ -167,15 +172,22 @@ export async function buildGraphData(
 	// Build nodes
 	const graphNodes: GraphNode[] = notes.map((note, idx) => {
 		const folderPath = resolveFolderPath(note.parent_id, folderMap);
-		const preview = stripMarkdown((note.body || '').slice(0, 300));
+		const rawBody = note.body || '';
+		const preview = stripMarkdown(rawBody.slice(0, 300));
+		const body =
+			rawBody.length > MAX_BODY_CHARS
+				? `${rawBody.slice(0, MAX_BODY_CHARS)}\n\n…`
+				: rawBody;
 		return {
 			id: idx,
 			label: note.title || '(untitled)',
 			group: folderPath,
 			color: folderColors[folderPath],
-			size: Math.max(8, Math.min(25, (note.body || '').length / 500)),
+			size: Math.max(8, Math.min(25, rawBody.length / 500)),
 			notebook: folderPath,
 			preview,
+			noteId: note.id,
+			body,
 		};
 	});
 

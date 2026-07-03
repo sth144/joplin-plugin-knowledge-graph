@@ -13,6 +13,7 @@
 	],
 	"license": "MIT",
 	"devDependencies": {
+		"@types/three": "^0.185.0",
 		"copy-webpack-plugin": "^11.0.0",
 		"fs-extra": "^11.2.0",
 		"glob": "^10.3.10",
@@ -23,7 +24,6 @@
 		"webpack-cli": "^5.1.4"
 	},
 	"dependencies": {
-		"vis-data": "^8.0.4",
-		"vis-network": "^10.1.0"
+		"three": "^0.185.1"
 	}
 }
