@@ -51,6 +51,16 @@ export interface GraphEdge {
 	weight: number;
 	color: string;
 	title?: string;
+	reasons: EdgeReason[];
+}
+
+export type EdgeReasonType = 'similarity' | 'ticket' | 'link';
+
+export interface EdgeReason {
+	type: EdgeReasonType;
+	label: string;
+	detail?: string;
+	weight: number;
 }
 
 export interface GraphData {
@@ -58,6 +68,18 @@ export interface GraphData {
 	edges: GraphEdge[];
 	folderColors: Record<string, string>;
 }
+
+const EDGE_COLORS: Record<EdgeReasonType, string> = {
+	similarity: 'rgba(150,150,150,0.3)',
+	ticket: 'rgba(255,165,0,0.5)',
+	link: 'rgba(100,100,255,0.6)',
+};
+
+const EDGE_PRIORITY: Record<EdgeReasonType, number> = {
+	similarity: 1,
+	ticket: 2,
+	link: 3,
+};
 
 /** Fetch all items from a paginated Joplin data endpoint. */
 async function fetchAll<T>(path: string[], fields: string[]): Promise<T[]> {
@@ -121,20 +143,64 @@ function addOrMergeEdge(
 	edgeMap: Map<string, GraphEdge>,
 	from: number,
 	to: number,
-	weight: number,
-	color: string,
-	title?: string,
+	reason: EdgeReason,
 ): void {
 	const key = `${Math.min(from, to)}-${Math.max(from, to)}`;
 	const existing = edgeMap.get(key);
 	if (existing) {
-		existing.weight += weight;
-		if (title) {
-			existing.title = existing.title ? `${existing.title}, ${title}` : title;
+		existing.weight += reason.weight;
+		const existingReason = existing.reasons.find(
+			item => item.type === reason.type && item.detail === reason.detail,
+		);
+		if (existingReason) {
+			existingReason.weight += reason.weight;
+		} else {
+			existing.reasons.push(reason);
 		}
+		existing.color = pickEdgeColor(existing.reasons);
+		existing.title = summarizeReasons(existing.reasons);
 	} else {
-		edgeMap.set(key, { from, to, weight, color, title });
+		edgeMap.set(key, {
+			from,
+			to,
+			weight: reason.weight,
+			color: EDGE_COLORS[reason.type],
+			title: summarizeReasons([reason]),
+			reasons: [reason],
+		});
 	}
+}
+
+function pickEdgeColor(reasons: EdgeReason[]): string {
+	let strongest = reasons[0];
+	for (const reason of reasons) {
+		if (EDGE_PRIORITY[reason.type] > EDGE_PRIORITY[strongest.type]) {
+			strongest = reason;
+		}
+	}
+	return EDGE_COLORS[strongest.type];
+}
+
+function summarizeReasons(reasons: EdgeReason[]): string {
+	const groups = new Map<EdgeReasonType, EdgeReason[]>();
+	for (const reason of reasons) {
+		if (!groups.has(reason.type)) groups.set(reason.type, []);
+		groups.get(reason.type)!.push(reason);
+	}
+
+	const parts: string[] = [];
+	const similarity = groups.get('similarity')?.[0];
+	if (similarity) parts.push(`Content similarity ${similarity.weight.toFixed(2)}`);
+
+	const tickets = groups.get('ticket') || [];
+	if (tickets.length) {
+		parts.push(`Shared tickets: ${tickets.map(item => item.detail).join(', ')}`);
+	}
+
+	const links = groups.get('link') || [];
+	if (links.length) parts.push('Internal Joplin link');
+
+	return parts.join(' + ');
 }
 
 /**
@@ -199,7 +265,12 @@ export async function buildGraphData(
 	const documents = notes.map(n => n.body || '');
 	const simEdges = computeSimilarityEdges(documents, SIMILARITY_THRESHOLD);
 	for (const { i, j, score } of simEdges) {
-		addOrMergeEdge(edgeMap, i, j, score, 'rgba(150,150,150,0.3)');
+		addOrMergeEdge(edgeMap, i, j, {
+			type: 'similarity',
+			label: 'Content similarity',
+			detail: score.toFixed(2),
+			weight: score,
+		});
 	}
 	report(`Found ${simEdges.length} similarity edges`);
 
@@ -216,8 +287,12 @@ export async function buildGraphData(
 		for (let a = 0; a < indices.length; a++) {
 			for (let b = a + 1; b < indices.length; b++) {
 				addOrMergeEdge(
-					edgeMap, indices[a], indices[b],
-					0.3, 'rgba(255,165,0,0.5)', key,
+					edgeMap, indices[a], indices[b], {
+						type: 'ticket',
+						label: 'Shared ticket',
+						detail: key,
+						weight: 0.3,
+					},
 				);
 			}
 		}
@@ -229,7 +304,11 @@ export async function buildGraphData(
 		for (const targetId of extractInternalLinks(notes[idx].body || '')) {
 			const targetIdx = idToIdx.get(targetId);
 			if (targetIdx !== undefined) {
-				addOrMergeEdge(edgeMap, idx, targetIdx, 0.5, 'rgba(100,100,255,0.6)');
+				addOrMergeEdge(edgeMap, idx, targetIdx, {
+					type: 'link',
+					label: 'Internal link',
+					weight: 0.5,
+				});
 			}
 		}
 	}

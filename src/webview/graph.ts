@@ -34,6 +34,16 @@ interface GraphEdge {
 	weight: number;
 	color: string;
 	title?: string;
+	reasons?: EdgeReason[];
+}
+
+type EdgeReasonType = 'similarity' | 'ticket' | 'link';
+
+interface EdgeReason {
+	type: EdgeReasonType;
+	label: string;
+	detail?: string;
+	weight: number;
 }
 
 interface GraphData {
@@ -58,6 +68,18 @@ interface RenderEdge {
 
 type ViewMode = '2d' | '3d';
 
+const EDGE_TYPE_LABELS: Record<EdgeReasonType, string> = {
+	similarity: 'Similar content',
+	ticket: 'Shared ticket',
+	link: 'Joplin link',
+};
+
+const EDGE_TYPE_COLORS: Record<EdgeReasonType, string> = {
+	similarity: 'rgba(150,150,150,0.65)',
+	ticket: 'rgba(255,165,0,0.8)',
+	link: 'rgba(100,100,255,0.85)',
+};
+
 const NODE_TEXTURE_WIDTH = 320;
 const NODE_TEXTURE_HEIGHT = 120;
 const MAX_LABEL_LINES = 2;
@@ -80,6 +102,7 @@ async function init(): Promise<void> {
 
 		loadingText.textContent = `Rendering ${graphData.nodes.length} nodes...`;
 		buildFilterPanel(graphData.folderColors);
+		buildEdgeTypePanel(graphData.edges);
 
 		const graph = new ThreeKnowledgeGraph(graphData);
 		graph.mount(document.getElementById('graph-container')!);
@@ -87,6 +110,43 @@ async function init(): Promise<void> {
 		loading.classList.add('hidden');
 	} catch (err) {
 		loadingText.textContent = `Error: ${err}`;
+	}
+}
+
+function buildEdgeTypePanel(edges: GraphEdge[]): void {
+	const container = document.getElementById('edge-type-filters')!;
+	const counts: Record<EdgeReasonType, number> = {
+		similarity: 0,
+		ticket: 0,
+		link: 0,
+	};
+
+	for (const edge of edges) {
+		for (const type of getEdgeReasonTypes(edge)) counts[type]++;
+	}
+
+	for (const type of Object.keys(EDGE_TYPE_LABELS) as EdgeReasonType[]) {
+		const label = document.createElement('label');
+		label.className = 'edge-type-label';
+
+		const checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.checked = true;
+		checkbox.dataset.edgeType = type;
+		checkbox.className = 'edge-type-filter';
+
+		const swatch = document.createElement('span');
+		swatch.className = 'edge-type-swatch';
+		swatch.style.background = EDGE_TYPE_COLORS[type];
+
+		const text = document.createElement('span');
+		text.textContent = `${EDGE_TYPE_LABELS[type]} (${counts[type]})`;
+
+		label.title = edgeTypeHelp(type);
+		label.appendChild(checkbox);
+		label.appendChild(swatch);
+		label.appendChild(text);
+		container.appendChild(label);
 	}
 }
 
@@ -132,6 +192,7 @@ class ThreeKnowledgeGraph {
 	private readonly controls: OrbitControls;
 	private mode: ViewMode = '3d';
 	private hoveredNode: LayoutNode | null = null;
+	private hoveredEdge: RenderEdge | null = null;
 	private pinnedNode: LayoutNode | null = null;
 	private pointerDown = new THREE.Vector2();
 	private searchTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -146,6 +207,7 @@ class ThreeKnowledgeGraph {
 		this.controls.dampingFactor = 0.08;
 		this.controls.minDistance = 120;
 		this.controls.maxDistance = 1800;
+		this.raycaster.params.Line = { threshold: 8 };
 	}
 
 	public mount(container: HTMLElement): void {
@@ -261,6 +323,9 @@ class ThreeKnowledgeGraph {
 		document.querySelectorAll<HTMLInputElement>('.nb-filter').forEach(cb => {
 			cb.addEventListener('change', () => this.applyFilters());
 		});
+		document.querySelectorAll<HTMLInputElement>('.edge-type-filter').forEach(cb => {
+			cb.addEventListener('change', () => this.applyFilters());
+		});
 
 		document.getElementById('select-all')!.addEventListener('click', (event) => {
 			event.preventDefault();
@@ -315,6 +380,10 @@ class ThreeKnowledgeGraph {
 		document.querySelectorAll<HTMLInputElement>('.nb-filter:checked').forEach(
 			cb => activeGroups.add(cb.dataset.group!),
 		);
+		const activeEdgeTypes = new Set<EdgeReasonType>();
+		document.querySelectorAll<HTMLInputElement>('.edge-type-filter:checked').forEach(
+			cb => activeEdgeTypes.add(cb.dataset.edgeType as EdgeReasonType),
+		);
 
 		const searchBox = document.getElementById('search-box') as HTMLInputElement;
 		const query = searchBox.value.trim().toLowerCase();
@@ -331,7 +400,13 @@ class ThreeKnowledgeGraph {
 
 		let visibleEdgeCount = 0;
 		for (const edge of this.edges) {
-			edge.visible = visibleIds.has(edge.data.from) && visibleIds.has(edge.data.to);
+			const typeMatch = getEdgeReasonTypes(edge.data).some(
+				type => activeEdgeTypes.has(type),
+			);
+			edge.visible =
+				typeMatch &&
+				visibleIds.has(edge.data.from) &&
+				visibleIds.has(edge.data.to);
 			edge.line.visible = edge.visible;
 			if (edge.visible) visibleEdgeCount++;
 		}
@@ -441,17 +516,45 @@ class ThreeKnowledgeGraph {
 		return this.nodeById.get(mesh.userData.nodeId) || null;
 	}
 
+	/** Raycast visible edges at a screen position; used for reason previews. */
+	private pickEdge(clientX: number, clientY: number): RenderEdge | null {
+		const rect = this.renderer.domElement.getBoundingClientRect();
+		this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+		this.pointer.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
+
+		this.raycaster.setFromCamera(this.pointer, this.camera);
+		const visibleEdges = this.edges.filter(edge => edge.visible);
+		const intersects = this.raycaster.intersectObjects(
+			visibleEdges.map(edge => edge.line),
+			false,
+		);
+		if (!intersects.length) return null;
+
+		const line = intersects[0].object;
+		return visibleEdges.find(edge => edge.line === line) || null;
+	}
+
 	private onPointerMove(event: PointerEvent): void {
 		// The pinned popup takes over; don't fight it with hover previews.
 		if (this.pinnedNode) return;
 
 		const node = this.pickNode(event.clientX, event.clientY);
-		if (!node) {
-			this.hideHoverPopup();
+		if (node) {
+			this.hoveredNode = node;
+			this.hoveredEdge = null;
+			this.showHoverPopup(node, event.clientX, event.clientY);
 			return;
 		}
-		this.hoveredNode = node;
-		this.showHoverPopup(node, event.clientX, event.clientY);
+
+		const edge = this.pickEdge(event.clientX, event.clientY);
+		if (edge) {
+			this.hoveredNode = null;
+			this.hoveredEdge = edge;
+			this.showEdgePopup(edge, event.clientX, event.clientY);
+			return;
+		}
+
+		this.hideHoverPopup();
 	}
 
 	private onClick(event: MouseEvent): void {
@@ -478,8 +581,9 @@ class ThreeKnowledgeGraph {
 	}
 
 	private hideHoverPopup(): void {
-		if (this.pinnedNode || !this.hoveredNode) return;
+		if (this.pinnedNode || (!this.hoveredNode && !this.hoveredEdge)) return;
 		this.hoveredNode = null;
+		this.hoveredEdge = null;
 		document.getElementById('hover-popup')!.style.display = 'none';
 	}
 
@@ -502,6 +606,20 @@ class ThreeKnowledgeGraph {
 		const openLink = document.getElementById('popup-open') as HTMLAnchorElement;
 		openLink.href = node.data.noteId ? `:/${node.data.noteId}` : '#';
 
+		popup.style.display = 'block';
+		this.positionPopup(popup, clientX, clientY);
+	}
+
+	private showEdgePopup(edge: RenderEdge, clientX: number, clientY: number): void {
+		const from = this.nodeById.get(edge.data.from);
+		const to = this.nodeById.get(edge.data.to);
+		const popup = document.getElementById('hover-popup')!;
+		popup.classList.remove('pinned');
+		document.getElementById('hover-title')!.textContent =
+			`${from?.data.label || 'Note'} <-> ${to?.data.label || 'Note'}`;
+		document.getElementById('hover-notebook')!.textContent = 'Relationship';
+		document.getElementById('hover-body')!.textContent =
+			edge.data.title || describeEdge(edge.data);
 		popup.style.display = 'block';
 		this.positionPopup(popup, clientX, clientY);
 	}
@@ -628,6 +746,30 @@ function parseRgba(input: string): { color: THREE.Color; opacity: number } {
 		color: new THREE.Color((r || 0) / 255, (g || 0) / 255, (b || 0) / 255),
 		opacity: a === undefined || Number.isNaN(a) ? 0.5 : a,
 	};
+}
+
+function getEdgeReasonTypes(edge: GraphEdge): EdgeReasonType[] {
+	if (edge.reasons?.length) {
+		return [...new Set(edge.reasons.map(reason => reason.type))];
+	}
+
+	if (edge.color.includes('255,165,0')) return ['ticket'];
+	if (edge.color.includes('100,100,255')) return ['link'];
+	return ['similarity'];
+}
+
+function edgeTypeHelp(type: EdgeReasonType): string {
+	if (type === 'similarity') return 'Notes with TF-IDF cosine similarity above the threshold.';
+	if (type === 'ticket') return 'Notes that mention the same Jira-style ticket key.';
+	return 'Notes connected by an internal Joplin note link.';
+}
+
+function describeEdge(edge: GraphEdge): string {
+	if (!edge.reasons?.length) return 'Relationship';
+	return edge.reasons.map(reason => {
+		if (reason.type === 'similarity') return `${reason.label} ${reason.weight.toFixed(2)}`;
+		return reason.detail ? `${reason.label}: ${reason.detail}` : reason.label;
+	}).join(' + ');
 }
 
 function seededUnit(seed: number): number {

@@ -260,7 +260,7 @@ const GRAPH_CSS = `
 	color: rgba(255, 255, 255, 0.5);
 }
 
-#filter-header {
+.filter-header {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-between;
@@ -269,7 +269,7 @@ const GRAPH_CSS = `
 	margin-bottom: 8px;
 }
 
-#filter-header a {
+.filter-header a {
 	color: #76b7b2;
 	font-size: 10px;
 	text-decoration: none;
@@ -277,7 +277,7 @@ const GRAPH_CSS = `
 	cursor: pointer;
 }
 
-#filter-header a:hover {
+.filter-header a:hover {
 	text-decoration: underline;
 }
 
@@ -285,6 +285,38 @@ const GRAPH_CSS = `
 	border: none;
 	border-top: 1px solid rgba(255, 255, 255, 0.15);
 	margin: 8px 0;
+}
+
+#edge-type-filters {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 6px;
+	margin-bottom: 10px;
+}
+
+.edge-type-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 8px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	cursor: pointer;
+	font-size: 11px;
+	line-height: 1.2;
+}
+
+.edge-type-label input {
+	margin: 0;
+}
+
+.edge-type-swatch {
+	display: inline-block;
+	width: 22px;
+	height: 3px;
+	border-radius: 999px;
+	box-shadow: 0 0 8px currentColor;
 }
 
 #notebook-filters {
@@ -359,7 +391,12 @@ function buildDialogHtml(graphData: GraphData): string {
 				<div id="search-wrapper">
 					<input type="text" id="search-box" placeholder="Search notes..." />
 				</div>
-				<div id="filter-header">
+				<div class="filter-header">
+					<b>Relationships</b>
+				</div>
+				<div id="edge-type-filters"></div>
+				<hr />
+				<div class="filter-header">
 					<b>Notebooks</b>
 					<span>
 						<a href="#" id="select-all">all</a>
