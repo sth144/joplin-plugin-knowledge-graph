@@ -11,6 +11,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { renderMarkdown } from './markdown';
+import { SearchResponse, SemanticPayload, SemanticResponse } from '../graph-messages';
+import { ParamsPanel } from './params';
 
 // Injected by Joplin into plugin webviews (panels and dialogs alike). Used to
 // hand note/link clicks back to the plugin, which runs the openItem command.
@@ -37,7 +39,7 @@ interface GraphEdge {
 	reasons?: EdgeReason[];
 }
 
-type EdgeReasonType = 'similarity' | 'ticket' | 'link';
+type EdgeReasonType = 'similarity' | 'ticket' | 'link' | 'semantic';
 
 interface EdgeReason {
 	type: EdgeReasonType;
@@ -50,6 +52,11 @@ interface GraphData {
 	nodes: GraphNode[];
 	edges: GraphEdge[];
 	folderColors: Record<string, string>;
+	semanticEdges?: GraphEdge[];
+	clusters?: number[];
+	clusterColors?: Record<string, string>;
+	clusterLabels?: Record<string, string>;
+	separation?: number;
 }
 
 interface LayoutNode {
@@ -58,27 +65,54 @@ interface LayoutNode {
 	velocity: THREE.Vector3;
 	visible: boolean;
 	mesh: THREE.Mesh;
+	/** Notebook-coloured material, restored when leaving the semantic view. */
+	baseMaterial: THREE.MeshBasicMaterial;
 }
 
 interface RenderEdge {
 	data: GraphEdge;
 	line: THREE.Line;
 	visible: boolean;
+	/** Which layout this edge belongs to; only one layout is shown at a time. */
+	layout: LayoutMode;
 }
 
 type ViewMode = '2d' | '3d';
+
+/**
+ * Which relationship model drives the graph. Both edge sets arrive in the same
+ * payload, so switching is a visibility change rather than a rebuild.
+ */
+type LayoutMode = 'links' | 'semantic';
+
+/** How the search box interprets what is typed into it. */
+type SearchMode = 'title' | 'semantic';
+
+const CLUSTER_LABEL_WIDTH = 512;
+const CLUSTER_LABEL_HEIGHT = 128;
 
 const EDGE_TYPE_LABELS: Record<EdgeReasonType, string> = {
 	similarity: 'Similar content',
 	ticket: 'Shared ticket',
 	link: 'Joplin link',
+	semantic: 'Similar meaning',
 };
 
 const EDGE_TYPE_COLORS: Record<EdgeReasonType, string> = {
 	similarity: 'rgba(150,150,150,0.65)',
 	ticket: 'rgba(255,165,0,0.8)',
 	link: 'rgba(100,100,255,0.85)',
+	semantic: 'rgba(118,183,178,0.85)',
 };
+
+/** Edge types belonging to each layout, used to filter the relationship list. */
+const LAYOUT_EDGE_TYPES: Record<LayoutMode, EdgeReasonType[]> = {
+	links: ['similarity', 'ticket', 'link'],
+	semantic: ['semantic'],
+};
+
+/** Nodes with no cluster (no semantic neighbours) render in grey. */
+const UNCLUSTERED_COLOR = '#6b6b7b';
 
 const NODE_TEXTURE_WIDTH = 320;
 const NODE_TEXTURE_HEIGHT = 120;
@@ -100,12 +134,20 @@ async function init(): Promise<void> {
 			return;
 		}
 
+		setupIndexNotice(graphData);
+
 		loadingText.textContent = `Rendering ${graphData.nodes.length} nodes...`;
 		buildFilterPanel(graphData.folderColors);
-		buildEdgeTypePanel(graphData.edges);
+		buildEdgeTypePanel([
+			...graphData.edges,
+			...(graphData.semanticEdges ?? []),
+		]);
 
 		const graph = new ThreeKnowledgeGraph(graphData);
 		graph.mount(document.getElementById('graph-container')!);
+
+		await setupSemanticPanel(graph);
+		setupSearchMode(graph);
 
 		loading.classList.add('hidden');
 	} catch (err) {
@@ -119,6 +161,7 @@ function buildEdgeTypePanel(edges: GraphEdge[]): void {
 		similarity: 0,
 		ticket: 0,
 		link: 0,
+		semantic: 0,
 	};
 
 	for (const edge of edges) {
@@ -128,6 +171,7 @@ function buildEdgeTypePanel(edges: GraphEdge[]): void {
 	for (const type of Object.keys(EDGE_TYPE_LABELS) as EdgeReasonType[]) {
 		const label = document.createElement('label');
 		label.className = 'edge-type-label';
+		label.dataset.edgeTypeRow = type;
 
 		const checkbox = document.createElement('input');
 		checkbox.type = 'checkbox';
@@ -148,6 +192,154 @@ function buildEdgeTypePanel(edges: GraphEdge[]): void {
 		label.appendChild(text);
 		container.appendChild(label);
 	}
+}
+
+/**
+ * Show only the relationship types that exist in the active layout, and make
+ * sure they are enabled — a type left unchecked in the other layout would
+ * otherwise present as an empty graph.
+ */
+/**
+ * Mount the parameter panel and route its requests to the plugin. Recomputing
+ * clusters comes back as a payload that is applied to the live scene, so the
+ * dialog never has to be reopened.
+ */
+async function setupSemanticPanel(graph: ThreeKnowledgeGraph): Promise<void> {
+	const container = document.getElementById('semantic-panel');
+	if (!container) return;
+
+	const panel = new ParamsPanel({
+		request: message => webviewApi.postMessage(message),
+		onSemantic: (response: SemanticResponse) => {
+			if (response?.error) {
+				showNotice(response.error);
+				return;
+			}
+			if (!response?.payload) {
+				showNotice('No vectors yet — build the index first.');
+				return;
+			}
+			graph.applySemanticPayload(response.payload);
+			showNotice('');
+		},
+		onNotice: showNotice,
+	}, container);
+
+	await panel.mount();
+}
+
+/** Toggle the search box between title matching and semantic search. */
+function setupSearchMode(graph: ThreeKnowledgeGraph): void {
+	const box = document.getElementById('search-box') as HTMLInputElement | null;
+	const buttons = Array.from(
+		document.querySelectorAll<HTMLButtonElement>('[data-search-mode]'),
+	);
+	if (!box || buttons.length === 0) return;
+
+	let mode: SearchMode = 'title';
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	let latest = '';
+
+	const runSemanticSearch = async (query: string) => {
+		latest = query;
+		if (!query.trim()) {
+			graph.applySemanticMatches(null);
+			return;
+		}
+
+		const response = await webviewApi.postMessage({
+			type: 'semanticSearch', text: query,
+		}) as SearchResponse | null;
+
+		// A slower earlier query must not overwrite a newer one.
+		if (latest !== query) return;
+
+		if (response?.error) {
+			showNotice(response.error);
+			return;
+		}
+
+		const ids = new Set<number>();
+		for (const result of response?.results ?? []) {
+			const nodeId = graph.nodeIdForNote(result.noteId);
+			if (nodeId !== undefined) ids.add(nodeId);
+		}
+		graph.applySemanticMatches(ids);
+	};
+
+	for (const button of buttons) {
+		button.addEventListener('click', () => {
+			mode = button.dataset.searchMode === 'semantic' ? 'semantic' : 'title';
+			for (const other of buttons) {
+				other.classList.toggle('active', other === button);
+			}
+			box.placeholder = mode === 'semantic'
+				? 'Search by meaning…'
+				: 'Search titles…';
+			graph.setSearchMode(mode);
+			if (mode === 'semantic') void runSemanticSearch(box.value);
+		});
+	}
+
+	box.addEventListener('input', () => {
+		if (mode !== 'semantic') return;
+		if (timer !== null) clearTimeout(timer);
+		timer = setTimeout(() => void runSemanticSearch(box.value), 250);
+	});
+}
+
+function showNotice(message: string): void {
+	const notice = document.getElementById('sem-notice');
+	if (!notice) return;
+	notice.textContent = message;
+	notice.classList.toggle('visible', message.length > 0);
+}
+
+/**
+ * Without an index the semantic view has nothing to show, so rather than leaving
+ * a disabled button and a tooltip, offer to build the index from here.
+ */
+function setupIndexNotice(graphData: GraphData): void {
+	const notice = document.getElementById('index-notice');
+	const button = document.getElementById('build-index') as HTMLButtonElement | null;
+	const text = document.getElementById('index-notice-text');
+	if (!notice || !button || !text) return;
+
+	if ((graphData.semanticEdges ?? []).length > 0) return;
+	notice.classList.add('visible');
+
+	button.addEventListener('click', async () => {
+		button.disabled = true;
+		button.textContent = 'Starting…';
+
+		const response = await webviewApi.postMessage({ type: 'buildIndex' }) as
+			{ started?: boolean; message?: string } | null;
+
+		if (response?.started) {
+			text.textContent =
+				'Indexing started. Close the graph to watch progress in the ' +
+				'Semantic Search panel, then reopen the graph to see clusters.';
+			button.textContent = 'Indexing in progress';
+			return;
+		}
+
+		text.textContent = response?.message ?? 'Could not start indexing.';
+		button.textContent = 'Build semantic index';
+		button.disabled = false;
+	});
+}
+
+function syncEdgeTypeRows(layout: LayoutMode): void {
+	const applicable = new Set<EdgeReasonType>(LAYOUT_EDGE_TYPES[layout]);
+
+	document.querySelectorAll<HTMLElement>('[data-edge-type-row]').forEach(row => {
+		const type = row.dataset.edgeTypeRow as EdgeReasonType;
+		const shown = applicable.has(type);
+		row.style.display = shown ? '' : 'none';
+
+		const checkbox = row.querySelector<HTMLInputElement>('.edge-type-filter');
+		if (shown && checkbox && !checkbox.checked) checkbox.checked = true;
+	});
 }
 
 function buildFilterPanel(folderColors: Record<string, string>): void {
@@ -187,7 +379,8 @@ class ThreeKnowledgeGraph {
 	private readonly raycaster = new THREE.Raycaster();
 	private readonly pointer = new THREE.Vector2();
 	private readonly nodes: LayoutNode[] = [];
-	private readonly edges: RenderEdge[] = [];
+	// Not readonly: the semantic edge set is replaced when clusters are recomputed.
+	private edges: RenderEdge[] = [];
 	private readonly nodeById = new Map<number, LayoutNode>();
 	private readonly controls: OrbitControls;
 	private mode: ViewMode = '3d';
@@ -198,8 +391,18 @@ class ThreeKnowledgeGraph {
 	private searchTimeout: ReturnType<typeof setTimeout> | undefined;
 	private simulationAlpha = 1;
 	private container: HTMLElement | null = null;
+	private layout: LayoutMode = 'links';
+	/** Cluster-coloured node textures, built on first switch to the semantic view. */
+	private clusterMaterials: THREE.MeshBasicMaterial[] | null = null;
+	/** Fixed world position per cluster id, which nodes are drawn towards. */
+	private clusterAnchors = new Map<number, THREE.Vector3>();
+	private clusterLabelSprites: THREE.Sprite[] = [];
+	private searchMode: SearchMode = 'title';
+	/** Node ids matching the current semantic query, or null when not searching. */
+	private semanticMatches: Set<number> | null = null;
+	private noteIdToNodeId = new Map<string, number>();
 
-	public constructor(private readonly graphData: GraphData) {
+	public constructor(private graphData: GraphData) {
 		this.scene.background = new THREE.Color('#171726');
 		this.camera.position.set(320, -420, 340);
 		this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -221,6 +424,8 @@ class ThreeKnowledgeGraph {
 		this.setupPointerEvents();
 		this.setupControls();
 		this.applyMode('3d');
+		syncEdgeTypeRows(this.layout);
+		this.rebuildClusterVisuals();
 		this.applyFilters();
 		this.resize();
 
@@ -259,13 +464,20 @@ class ThreeKnowledgeGraph {
 				velocity: new THREE.Vector3(),
 				visible: true,
 				mesh,
+				baseMaterial: material,
 			};
 			this.nodes.push(layoutNode);
 			this.nodeById.set(node.id, layoutNode);
+			this.noteIdToNodeId.set(node.noteId, node.id);
 			this.scene.add(mesh);
 		}
 
-		for (const edge of this.graphData.edges) {
+		this.createEdgeObjects(this.graphData.edges, 'links');
+		this.createEdgeObjects(this.graphData.semanticEdges ?? [], 'semantic');
+	}
+
+	private createEdgeObjects(edges: GraphEdge[], layout: LayoutMode): void {
+		for (const edge of edges) {
 			const from = this.nodeById.get(edge.from);
 			const to = this.nodeById.get(edge.to);
 			if (!from || !to) continue;
@@ -281,9 +493,8 @@ class ThreeKnowledgeGraph {
 				opacity,
 			});
 			const line = new THREE.Line(geometry, material);
-			const renderEdge = { data: edge, line, visible: true };
 
-			this.edges.push(renderEdge);
+			this.edges.push({ data: edge, line, visible: true, layout });
 			this.scene.add(line);
 		}
 	}
@@ -355,6 +566,246 @@ class ThreeKnowledgeGraph {
 		document.getElementById('view-3d')!.addEventListener('click', () => {
 			this.applyMode('3d');
 		});
+
+		document.getElementById('layout-links')?.addEventListener('click', () => {
+			this.applyLayout('links');
+		});
+		document.getElementById('layout-semantic')?.addEventListener('click', () => {
+			if ((this.graphData.semanticEdges ?? []).length === 0) return;
+			this.applyLayout('semantic');
+		});
+	}
+
+	/**
+	 * Switch between the link/TF-IDF graph and the embedding-derived one. Both
+	 * edge sets already exist as scene objects, so this only changes which are
+	 * visible, how nodes are coloured, and which relationship filters apply.
+	 */
+	private applyLayout(layout: LayoutMode): void {
+		if (this.layout === layout) return;
+		this.layout = layout;
+
+		document.getElementById('layout-links')?.classList.toggle(
+			'active', layout === 'links',
+		);
+		document.getElementById('layout-semantic')?.classList.toggle(
+			'active', layout === 'semantic',
+		);
+
+		this.applyNodeColors();
+		this.updateClusterLabelVisibility();
+		syncEdgeTypeRows(layout);
+
+		// Re-run the force simulation: a different edge set implies a different
+		// resting shape, and leaving nodes where the old edges put them would
+		// misrepresent the new one.
+		this.simulationAlpha = 1;
+		this.applyFilters();
+	}
+
+	/**
+	 * Recompute everything derived from the cluster assignment: anchor positions,
+	 * node colours and floating cluster labels.
+	 */
+	private rebuildClusterVisuals(): void {
+		this.clusterMaterials = null;
+		this.computeClusterAnchors();
+		this.buildClusterLabels();
+		this.applyNodeColors();
+		this.updateClusterLabelVisibility();
+	}
+
+	/**
+	 * Place each cluster at a fixed point, spread evenly so the layout has
+	 * somewhere distinct to pull each group.
+	 *
+	 * In 3D the points go on a sphere using a Fibonacci spiral, which distributes
+	 * far more evenly than stepping latitude and longitude (that bunches points at
+	 * the poles). In 2D they go on a circle.
+	 */
+	private computeClusterAnchors(): void {
+		this.clusterAnchors.clear();
+
+		const ids = [...new Set(this.graphData.clusters ?? [])]
+			.filter(id => id >= 0)
+			.sort((a, b) => a - b);
+		if (ids.length === 0) return;
+
+		const radius = Math.max(320, Math.sqrt(this.nodes.length) * 62);
+		const golden = Math.PI * (3 - Math.sqrt(5));
+
+		ids.forEach((id, index) => {
+			if (this.mode === '2d' || ids.length === 1) {
+				const angle = (index / ids.length) * Math.PI * 2;
+				this.clusterAnchors.set(
+					id,
+					new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, 0),
+				);
+				return;
+			}
+
+			const y = 1 - (index / (ids.length - 1)) * 2;
+			const ringRadius = Math.sqrt(Math.max(0, 1 - y * y));
+			const theta = golden * index;
+			this.clusterAnchors.set(
+				id,
+				new THREE.Vector3(
+					Math.cos(theta) * ringRadius * radius,
+					y * radius,
+					Math.sin(theta) * ringRadius * radius,
+				),
+			);
+		});
+	}
+
+	/** Floating text at each cluster anchor, naming the group. */
+	private buildClusterLabels(): void {
+		for (const sprite of this.clusterLabelSprites) {
+			this.scene.remove(sprite);
+			sprite.material.map?.dispose();
+			sprite.material.dispose();
+		}
+		this.clusterLabelSprites = [];
+
+		const labels = this.graphData.clusterLabels ?? {};
+		const colors = this.graphData.clusterColors ?? {};
+
+		for (const [id, anchor] of this.clusterAnchors) {
+			const text = labels[String(id)];
+			if (!text) continue;
+
+			const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+				map: createClusterLabelTexture(text, colors[String(id)] ?? '#ffffff'),
+				transparent: true,
+				depthWrite: false,
+			}));
+
+			// Sit above the cluster so labels do not fight with note cards.
+			sprite.position.copy(anchor).add(new THREE.Vector3(0, 54, 0));
+			sprite.scale.set(260, 65, 1);
+			sprite.visible = false;
+			this.clusterLabelSprites.push(sprite);
+			this.scene.add(sprite);
+		}
+	}
+
+	private updateClusterLabelVisibility(): void {
+		const show = this.layout === 'semantic' && this.clusterAnchors.size > 0;
+		for (const sprite of this.clusterLabelSprites) sprite.visible = show;
+	}
+
+	/**
+	 * Adopt a recomputed semantic view without reopening the dialog. Only the
+	 * semantic edge objects are rebuilt; nodes and link-view edges are untouched.
+	 */
+	public applySemanticPayload(payload: SemanticPayload): void {
+		this.graphData.clusterLabels = payload.clusterLabels;
+		this.graphData.clusterColors = payload.clusterColors;
+		this.graphData.separation = payload.separation;
+
+		const clusters = new Array<number>(this.graphData.nodes.length).fill(-1);
+		for (const [noteId, cluster] of Object.entries(payload.clusters)) {
+			const nodeId = this.noteIdToNodeId.get(noteId);
+			if (nodeId !== undefined) clusters[nodeId] = cluster;
+		}
+		this.graphData.clusters = clusters;
+
+		this.replaceSemanticEdges(payload.edges);
+		this.rebuildClusterVisuals();
+		syncEdgeTypeRows(this.layout);
+
+		this.simulationAlpha = 1;
+		this.applyFilters();
+	}
+
+	private replaceSemanticEdges(
+		edges: Array<{ a: string; b: string; score: number }>,
+	): void {
+		for (const edge of this.edges) {
+			if (edge.layout !== 'semantic') continue;
+			this.scene.remove(edge.line);
+			edge.line.geometry.dispose();
+			(edge.line.material as THREE.Material).dispose();
+		}
+		this.edges = this.edges.filter(edge => edge.layout !== 'semantic');
+
+		const rebuilt: GraphEdge[] = [];
+		for (const edge of edges) {
+			const from = this.noteIdToNodeId.get(edge.a);
+			const to = this.noteIdToNodeId.get(edge.b);
+			if (from === undefined || to === undefined) continue;
+
+			rebuilt.push({
+				from,
+				to,
+				weight: edge.score,
+				color: EDGE_TYPE_COLORS.semantic,
+				title: `Semantic similarity ${edge.score.toFixed(2)}`,
+				reasons: [{
+					type: 'semantic',
+					label: 'Semantic similarity',
+					detail: edge.score.toFixed(2),
+					weight: edge.score,
+				}],
+			});
+		}
+
+		this.graphData.semanticEdges = rebuilt;
+		this.createEdgeObjects(rebuilt, 'semantic');
+		updateEdgeTypeCount('semantic', rebuilt.length);
+	}
+
+	/** Restrict the graph to notes matching a semantic query. */
+	public applySemanticMatches(matches: Set<number> | null): void {
+		this.semanticMatches = matches;
+		this.applyFilters();
+	}
+
+	public nodeIdForNote(noteId: string): number | undefined {
+		return this.noteIdToNodeId.get(noteId);
+	}
+
+	public setSearchMode(mode: SearchMode): void {
+		this.searchMode = mode;
+		if (mode === 'title') this.semanticMatches = null;
+		this.applyFilters();
+	}
+
+	/** Colour nodes by notebook in the link view, by cluster in the semantic one. */
+	private applyNodeColors(): void {
+		// Notebook colours unless there is a clustering to show. With clustering
+		// switched off the semantic view is about distance, not groups, so keeping
+		// notebook colours makes it directly comparable to the link view.
+		if (this.layout === 'links' || this.clusterAnchors.size === 0) {
+			for (const node of this.nodes) {
+				node.mesh.material = node.baseMaterial;
+			}
+			return;
+		}
+
+		if (!this.clusterMaterials) this.clusterMaterials = this.buildClusterMaterials();
+		for (let i = 0; i < this.nodes.length; i++) {
+			this.nodes[i].mesh.material = this.clusterMaterials[i];
+		}
+	}
+
+	/**
+	 * Node labels bake their colour into a texture, so cluster colouring needs a
+	 * second set. Built once, on the first switch, rather than up front.
+	 */
+	private buildClusterMaterials(): THREE.MeshBasicMaterial[] {
+		const clusters = this.graphData.clusters ?? [];
+		const colors = this.graphData.clusterColors ?? {};
+
+		return this.nodes.map((node, i) => {
+			const cluster = clusters[i] ?? -1;
+			const color = colors[String(cluster)] ?? UNCLUSTERED_COLOR;
+			return new THREE.MeshBasicMaterial({
+				map: createNodeTexture({ ...node.data, color }),
+				transparent: true,
+				depthWrite: false,
+			});
+		});
 	}
 
 	private applyMode(mode: ViewMode): void {
@@ -364,6 +815,13 @@ class ThreeKnowledgeGraph {
 
 		document.getElementById('view-2d')?.classList.toggle('active', mode === '2d');
 		document.getElementById('view-3d')?.classList.toggle('active', mode === '3d');
+
+		// Anchors sit on a circle in 2D and a sphere in 3D.
+		if (this.clusterAnchors.size > 0) {
+			this.computeClusterAnchors();
+			this.buildClusterLabels();
+			this.updateClusterLabelVisibility();
+		}
 
 		if (mode === '2d') {
 			this.camera.position.set(0, 0, 720);
@@ -391,8 +849,9 @@ class ThreeKnowledgeGraph {
 
 		for (const node of this.nodes) {
 			const groupMatch = activeGroups.has(node.data.group);
-			const searchMatch =
-				!query || node.data.label.toLowerCase().includes(query);
+			const searchMatch = this.searchMode === 'semantic'
+				? this.semanticMatches === null || this.semanticMatches.has(node.data.id)
+				: !query || node.data.label.toLowerCase().includes(query);
 			node.visible = groupMatch && searchMatch;
 			node.mesh.visible = node.visible;
 			if (node.visible) visibleIds.add(node.data.id);
@@ -404,6 +863,7 @@ class ThreeKnowledgeGraph {
 				type => activeEdgeTypes.has(type),
 			);
 			edge.visible =
+				edge.layout === this.layout &&
 				typeMatch &&
 				visibleIds.has(edge.data.from) &&
 				visibleIds.has(edge.data.to);
@@ -463,9 +923,28 @@ class ThreeKnowledgeGraph {
 			to.velocity.sub(delta);
 		}
 
+		// Pull each node towards its cluster's anchor instead of towards the origin,
+		// which is what actually separates clusters in space. Without this every
+		// cluster collapses into the same ball and only the colours differ.
+		const clusters = this.graphData.clusters ?? [];
+		const separation = this.graphData.separation ?? 0.6;
+		const useAnchors = this.layout === 'semantic'
+			&& this.clusterAnchors.size > 0
+			&& separation > 0;
+
 		for (const node of visibleNodes) {
-			const centerPull = node.position.clone().multiplyScalar(-0.0018 * alpha);
-			node.velocity.add(centerPull);
+			const anchor = useAnchors
+				? this.clusterAnchors.get(clusters[node.data.id] ?? -1)
+				: undefined;
+
+			if (anchor) {
+				const toAnchor = new THREE.Vector3().subVectors(anchor, node.position);
+				if (this.mode === '2d') toAnchor.z = 0;
+				node.velocity.add(toAnchor.multiplyScalar(0.004 * separation * alpha));
+			} else {
+				const centerPull = node.position.clone().multiplyScalar(-0.0018 * alpha);
+				node.velocity.add(centerPull);
+			}
 			if (this.mode === '2d') {
 				node.velocity.z += -node.position.z * 0.08 * alpha;
 			}
@@ -755,19 +1234,56 @@ function getEdgeReasonTypes(edge: GraphEdge): EdgeReasonType[] {
 
 	if (edge.color.includes('255,165,0')) return ['ticket'];
 	if (edge.color.includes('100,100,255')) return ['link'];
+	if (edge.color.includes('118,183,178')) return ['semantic'];
 	return ['similarity'];
+}
+
+/** Canvas texture for a floating cluster name. */
+function createClusterLabelTexture(text: string, color: string): THREE.Texture {
+	const canvas = document.createElement('canvas');
+	canvas.width = CLUSTER_LABEL_WIDTH;
+	canvas.height = CLUSTER_LABEL_HEIGHT;
+
+	const context = canvas.getContext('2d')!;
+	context.clearRect(0, 0, canvas.width, canvas.height);
+
+	context.font = 'bold 46px -apple-system, Segoe UI, sans-serif';
+	context.textAlign = 'center';
+	context.textBaseline = 'middle';
+
+	// Dark outline so the text stays legible over nodes and edges of any colour.
+	context.lineWidth = 8;
+	context.strokeStyle = 'rgba(10, 10, 26, 0.92)';
+	context.strokeText(text, canvas.width / 2, canvas.height / 2, canvas.width - 24);
+
+	context.fillStyle = color;
+	context.fillText(text, canvas.width / 2, canvas.height / 2, canvas.width - 24);
+
+	const texture = new THREE.CanvasTexture(canvas);
+	texture.colorSpace = THREE.SRGBColorSpace;
+	return texture;
+}
+
+/** Update the count shown beside a relationship filter after a refresh. */
+function updateEdgeTypeCount(type: EdgeReasonType, count: number): void {
+	const row = document.querySelector<HTMLElement>(`[data-edge-type-row="${type}"]`);
+	const text = row?.querySelector('span:last-child');
+	if (text) text.textContent = `${EDGE_TYPE_LABELS[type]} (${count})`;
 }
 
 function edgeTypeHelp(type: EdgeReasonType): string {
 	if (type === 'similarity') return 'Notes with TF-IDF cosine similarity above the threshold.';
 	if (type === 'ticket') return 'Notes that mention the same Jira-style ticket key.';
+	if (type === 'semantic') return 'Notes whose meaning is similar, according to the local embedding index.';
 	return 'Notes connected by an internal Joplin note link.';
 }
 
 function describeEdge(edge: GraphEdge): string {
 	if (!edge.reasons?.length) return 'Relationship';
 	return edge.reasons.map(reason => {
-		if (reason.type === 'similarity') return `${reason.label} ${reason.weight.toFixed(2)}`;
+		if (reason.type === 'similarity' || reason.type === 'semantic') {
+			return `${reason.label} ${reason.weight.toFixed(2)}`;
+		}
 		return reason.detail ? `${reason.label}: ${reason.detail}` : reason.label;
 	}).join(' + ');
 }

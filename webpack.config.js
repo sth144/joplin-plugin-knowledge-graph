@@ -29,6 +29,46 @@ function readExtraScripts() {
 	);
 }
 
+const ortDir = path.resolve(rootDir, 'node_modules/onnxruntime-web/dist');
+
+// Embedding runtime assets that must ship inside the .jpl so that indexing
+// works with no network access. ORT_WASM_FILE is the CPU-only build; the
+// WebGPU-capable "jsep" variant is twice the size and we do not use it.
+const ORT_WASM_FILE = 'ort-wasm-simd-threaded.wasm';
+
+/**
+ * Aliases that force the embedding stack down its browser code path.
+ *
+ * Both transformers.js and onnxruntime-web publish a "node" export condition,
+ * which webpack picks under `target: 'node'`. Those node builds statically
+ * require `onnxruntime-node` (a native module that cannot ship in a .jpl) and
+ * load WASM through `fs`, which the plugin sandbox does not provide. Pointing
+ * at the web/bundled builds explicitly sidesteps the condition resolution
+ * entirely — the alternative is a fragile `conditionNames` override.
+ */
+function embeddingAliases() {
+	return {
+		'@huggingface/transformers': path.resolve(
+			rootDir, 'node_modules/@huggingface/transformers/dist/transformers.web.js',
+		),
+		// transformers.js imports the WebGPU entry point; give it the CPU-only
+		// bundle instead. Same module surface, half the WASM payload, and the
+		// "bundle" build inlines its WASM glue so nothing is fetched at runtime.
+		'onnxruntime-web/webgpu': path.resolve(ortDir, 'ort.wasm.bundle.min.mjs'),
+		'onnxruntime-node': false,
+	};
+}
+
+function embeddingAssetPatterns() {
+	return [
+		{ from: 'assets/models', to: path.resolve(distDir, 'assets/models') },
+		{
+			from: path.resolve(ortDir, ORT_WASM_FILE),
+			to: path.resolve(distDir, 'assets/ort', ORT_WASM_FILE),
+		},
+	];
+}
+
 // Main plugin bundle
 function buildMainConfig() {
 	return {
@@ -38,10 +78,16 @@ function buildMainConfig() {
 		resolve: {
 			alias: {
 				api: path.resolve(rootDir, 'api'),
+				...embeddingAliases(),
 			},
 			extensions: ['.ts', '.js'],
 		},
 		module: {
+			// onnxruntime-web refers to its WASM binaries via `new URL(...)`, which
+			// webpack would resolve and copy into the bundle — an extra 36MB of
+			// binaries we never load, since the runtime is handed `wasmBinary`
+			// directly. Leaving these URLs as plain code keeps them out.
+			parser: { javascript: { url: false } },
 			rules: [
 				{
 					test: /\.ts$/,
@@ -58,6 +104,7 @@ function buildMainConfig() {
 			new CopyPlugin({
 				patterns: [
 					{ from: 'src/manifest.json', to: path.resolve(distDir, 'manifest.json') },
+					...embeddingAssetPatterns(),
 				],
 			}),
 		],
@@ -122,10 +169,18 @@ function createArchiveConfig() {
 		mode: 'production',
 		entry: './src/index.ts',
 		resolve: {
-			alias: { api: path.resolve(rootDir, 'api') },
+			// Same aliases as the main build: this stub compiles src/index.ts too,
+			// so without them it would resolve the native onnxruntime-node path.
+			alias: {
+				api: path.resolve(rootDir, 'api'),
+				...embeddingAliases(),
+			},
 			extensions: ['.ts', '.js'],
 		},
 		module: {
+			// As in buildMainConfig: keep onnxruntime-web's `new URL()` references
+			// from dragging duplicate WASM binaries into dist.
+			parser: { javascript: { url: false } },
 			rules: [{ test: /\.ts$/, use: 'ts-loader', exclude: /node_modules/ }],
 		},
 		output: { filename: '_archive_stub.js', path: distDir },

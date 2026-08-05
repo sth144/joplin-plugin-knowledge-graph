@@ -4,6 +4,7 @@
  */
 
 import joplin from 'api';
+import { PALETTE } from './palette';
 import { computeSimilarityEdges, stripMarkdown } from './tfidf';
 
 const SIMILARITY_THRESHOLD = 0.15;
@@ -13,12 +14,6 @@ const MAX_BODY_CHARS = 4000;
 const JIRA_PATTERN = /\b([A-Z]{2,10}-\d+)\b/g;
 const INTERNAL_LINK_PATTERN = /\[.*?\]\(:\/([a-f0-9]{32})\)/g;
 
-const PALETTE = [
-	'#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
-	'#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
-	'#86bcb6', '#8cd17d', '#b6992d', '#499894', '#d37295',
-	'#a0cbe8', '#ffbe7d', '#d4a6c8',
-];
 
 interface JoplinNote {
 	id: string;
@@ -54,7 +49,7 @@ export interface GraphEdge {
 	reasons: EdgeReason[];
 }
 
-export type EdgeReasonType = 'similarity' | 'ticket' | 'link';
+export type EdgeReasonType = 'similarity' | 'ticket' | 'link' | 'semantic';
 
 export interface EdgeReason {
 	type: EdgeReasonType;
@@ -67,22 +62,48 @@ export interface GraphData {
 	nodes: GraphNode[];
 	edges: GraphEdge[];
 	folderColors: Record<string, string>;
+	/**
+	 * Edges from embedding similarity, kept separate from `edges` so the webview
+	 * can switch between the two views without another round trip. Empty when no
+	 * semantic index has been built.
+	 */
+	semanticEdges: GraphEdge[];
+	/** Cluster id per node, parallel to `nodes`. -1 when unclustered. */
+	clusters: number[];
+	clusterColors: Record<string, string>;
+	clusterLabels: Record<string, string>;
+	separation: number;
+}
+
+/**
+ * Semantic relationships supplied by the embedding index, keyed by note id so
+ * this module stays independent of how vectors are stored.
+ */
+export interface SemanticOverlay {
+	edges: Array<{ a: string; b: string; score: number }>;
+	clusters: Record<string, number>;
+	/** Inferred name per cluster id. Empty when clustering is off. */
+	clusterLabels: Record<string, string>;
+	/** Layout separation strength, passed through to the webview. */
+	separation: number;
 }
 
 const EDGE_COLORS: Record<EdgeReasonType, string> = {
 	similarity: 'rgba(150,150,150,0.3)',
 	ticket: 'rgba(255,165,0,0.5)',
 	link: 'rgba(100,100,255,0.6)',
+	semantic: 'rgba(118,183,178,0.45)',
 };
 
 const EDGE_PRIORITY: Record<EdgeReasonType, number> = {
 	similarity: 1,
-	ticket: 2,
-	link: 3,
+	semantic: 2,
+	ticket: 3,
+	link: 4,
 };
 
 /** Fetch all items from a paginated Joplin data endpoint. */
-async function fetchAll<T>(path: string[], fields: string[]): Promise<T[]> {
+export async function fetchAll<T>(path: string[], fields: string[]): Promise<T[]> {
 	const items: T[] = [];
 	let page = 1;
 	let hasMore = true;
@@ -192,6 +213,9 @@ function summarizeReasons(reasons: EdgeReason[]): string {
 	const similarity = groups.get('similarity')?.[0];
 	if (similarity) parts.push(`Content similarity ${similarity.weight.toFixed(2)}`);
 
+	const semantic = groups.get('semantic')?.[0];
+	if (semantic) parts.push(`Semantic similarity ${semantic.weight.toFixed(2)}`);
+
 	const tickets = groups.get('ticket') || [];
 	if (tickets.length) {
 		parts.push(`Shared tickets: ${tickets.map(item => item.detail).join(', ')}`);
@@ -209,6 +233,7 @@ function summarizeReasons(reasons: EdgeReason[]): string {
  */
 export async function buildGraphData(
 	onProgress?: (msg: string) => void,
+	semantic?: SemanticOverlay | null,
 ): Promise<GraphData> {
 	const report = onProgress || (() => {});
 
@@ -314,7 +339,70 @@ export async function buildGraphData(
 	}
 
 	const graphEdges = [...edgeMap.values()];
-	report(`Graph complete: ${graphNodes.length} nodes, ${graphEdges.length} edges`);
 
-	return { nodes: graphNodes, edges: graphEdges, folderColors };
+	// 4. Semantic view, when an embedding index exists. Built as a separate edge
+	// set rather than merged in, so the two views stay independently selectable.
+	const overlay = buildSemanticView(idToIdx, graphNodes.length, semantic);
+	report(
+		`Graph complete: ${graphNodes.length} nodes, ${graphEdges.length} edges` +
+		(overlay.semanticEdges.length
+			? `, ${overlay.semanticEdges.length} semantic edges`
+			: ''),
+	);
+
+	return {
+		nodes: graphNodes,
+		edges: graphEdges,
+		folderColors,
+		...overlay,
+	};
+}
+
+/** Map a note-id-keyed semantic overlay onto node indices. */
+function buildSemanticView(
+	idToIdx: Map<string, number>,
+	nodeCount: number,
+	semantic: SemanticOverlay | null | undefined,
+): Pick<GraphData, 'semanticEdges' | 'clusters' | 'clusterColors' | 'clusterLabels' | 'separation'> {
+	const clusters = new Array<number>(nodeCount).fill(-1);
+	if (!semantic) {
+		return {
+			semanticEdges: [],
+			clusters,
+			clusterColors: {},
+			clusterLabels: {},
+			separation: 0.6,
+		};
+	}
+
+	const semanticMap = new Map<string, GraphEdge>();
+	for (const edge of semantic.edges) {
+		const from = idToIdx.get(edge.a);
+		const to = idToIdx.get(edge.b);
+		// A note indexed earlier may have been deleted since.
+		if (from === undefined || to === undefined) continue;
+
+		addOrMergeEdge(semanticMap, from, to, {
+			type: 'semantic',
+			label: 'Semantic similarity',
+			detail: edge.score.toFixed(2),
+			weight: edge.score,
+		});
+	}
+
+	const clusterColors: Record<string, string> = {};
+	for (const [noteId, cluster] of Object.entries(semantic.clusters)) {
+		const idx = idToIdx.get(noteId);
+		if (idx === undefined) continue;
+		clusters[idx] = cluster;
+		clusterColors[String(cluster)] = PALETTE[cluster % PALETTE.length];
+	}
+
+	return {
+		semanticEdges: [...semanticMap.values()],
+		clusters,
+		clusterColors,
+		clusterLabels: semantic.clusterLabels,
+		separation: semantic.separation,
+	};
 }

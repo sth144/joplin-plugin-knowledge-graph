@@ -1,6 +1,13 @@
 import joplin from 'api';
-import { ToolbarButtonLocation } from 'api/types';
+import { ToastType, ToolbarButtonLocation } from 'api/types';
 import { buildGraphData, GraphData } from './graph-builder';
+import { Indexer } from './embeddings/indexer';
+import { buildOverlay } from './embeddings/overlay';
+import { runSelfTest } from './embeddings/selftest';
+import { GraphController } from './graph-controller';
+import { GraphRequest } from './graph-messages';
+import { SearchPanel } from './search-panel';
+import { registerSettings } from './settings';
 
 const GRAPH_CSS = `
 #graph-root {
@@ -206,7 +213,7 @@ const GRAPH_CSS = `
 	border-radius: 12px;
 	font-size: 11px;
 	max-height: 88vh;
-	overflow: hidden;
+	overflow-y: auto;
 	z-index: 1000;
 	width: min(360px, calc(100vw - 32px));
 	border: 1px solid rgba(255, 255, 255, 0.15);
@@ -215,6 +222,63 @@ const GRAPH_CSS = `
 
 #search-wrapper {
 	margin-bottom: 10px;
+}
+
+#layout-toggle {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px;
+	margin-bottom: 8px;
+	padding: 3px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.view-button:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+#index-notice {
+	display: none;
+	margin: -4px 0 10px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	background: rgba(118, 183, 178, 0.12);
+	border: 1px solid rgba(118, 183, 178, 0.35);
+	font-size: 11px;
+	line-height: 1.45;
+	color: rgba(255, 255, 255, 0.82);
+}
+
+#index-notice.visible {
+	display: block;
+}
+
+#index-notice-text {
+	margin-bottom: 8px;
+}
+
+#build-index {
+	width: 100%;
+	padding: 6px 8px;
+	border: 0;
+	border-radius: 6px;
+	background: rgba(118, 183, 178, 0.32);
+	color: #fff;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+#build-index:hover {
+	background: rgba(118, 183, 178, 0.48);
+}
+
+#build-index:disabled {
+	opacity: 0.5;
+	cursor: default;
 }
 
 #view-toggle {
@@ -323,9 +387,164 @@ const GRAPH_CSS = `
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 	gap: 6px;
-	max-height: 58vh;
+	max-height: 34vh;
 	overflow-y: auto;
 	padding-right: 4px;
+}
+
+#search-mode-toggle {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px;
+	margin-bottom: 6px;
+	padding: 3px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#semantic-details summary,
+#semantic-panel summary {
+	cursor: pointer;
+	font-weight: bold;
+	padding: 4px 0;
+	list-style: revert;
+}
+
+#sem-notice {
+	display: none;
+	margin: 6px 0;
+	padding: 6px 8px;
+	border-radius: 6px;
+	background: rgba(237, 201, 72, 0.14);
+	border: 1px solid rgba(237, 201, 72, 0.4);
+	color: rgba(255, 255, 255, 0.88);
+	line-height: 1.4;
+}
+
+#sem-notice.visible {
+	display: block;
+}
+
+#sem-status-block {
+	margin: 6px 0 10px;
+	padding: 8px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.05);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#sem-status {
+	color: rgba(255, 255, 255, 0.75);
+	line-height: 1.4;
+}
+
+#sem-status.sem-warn {
+	color: #edc948;
+}
+
+#sem-progress-track {
+	display: none;
+	height: 4px;
+	margin-top: 6px;
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.14);
+	overflow: hidden;
+}
+
+#sem-progress-track.visible {
+	display: block;
+}
+
+#sem-progress-bar {
+	height: 100%;
+	width: 0;
+	border-radius: 999px;
+	background: #76b7b2;
+	transition: width 0.3s ease;
+}
+
+#sem-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.sem-button {
+	flex: 1;
+	padding: 5px 6px;
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.08);
+	color: #fff;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.sem-button:hover:not(:disabled) {
+	background: rgba(255, 255, 255, 0.16);
+}
+
+.sem-button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+#sem-recompute {
+	width: 100%;
+	margin-top: 6px;
+	background: rgba(118, 183, 178, 0.28);
+}
+
+#sem-recompute:hover:not(:disabled) {
+	background: rgba(118, 183, 178, 0.44);
+}
+
+.sem-group {
+	margin-bottom: 6px;
+	border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sem-group-note {
+	margin: 4px 0 8px;
+	color: rgba(255, 255, 255, 0.55);
+	line-height: 1.4;
+}
+
+.sem-field {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.sem-field label {
+	color: rgba(255, 255, 255, 0.8);
+	line-height: 1.35;
+}
+
+.sem-field input[type="number"],
+.sem-field select {
+	width: 84px;
+	flex: none;
+	padding: 3px 5px;
+	background: rgba(255, 255, 255, 0.09);
+	border: 1px solid rgba(255, 255, 255, 0.18);
+	border-radius: 5px;
+	color: #fff;
+	font: inherit;
+	font-size: 11px;
+}
+
+.sem-field-bool {
+	justify-content: flex-start;
+}
+
+.sem-field-bool input {
+	margin: 0;
+	flex: none;
 }
 
 .nb-label {
@@ -366,6 +585,18 @@ const GRAPH_CSS = `
 // so the webview reads its data straight from the DOM instead of
 // requesting it via postMessage. Escaping "<" prevents a "</script>" inside
 // note content from breaking out of the data block; it stays valid JSON.
+/**
+ * The semantic view needs an index. Rather than let the button silently do
+ * nothing, disable it and say why.
+ */
+function semanticToggleAttrs(graphData: GraphData): string {
+	if (graphData.semanticEdges.length > 0) {
+		return ' title="Group notes by embedding similarity"';
+	}
+	return ' disabled title="Build the semantic index first ' +
+		'(Tools &gt; Build semantic index)"';
+}
+
 function buildDialogHtml(graphData: GraphData): string {
 	const json = JSON.stringify(graphData).replace(/</g, '\\u003c');
 	return `
@@ -384,12 +615,27 @@ function buildDialogHtml(graphData: GraphData): string {
 				<a id="popup-open" href="#" rel="noopener">Open note &#8599;</a>
 			</div>
 			<div id="ctrl-panel">
+				<div id="layout-toggle" aria-label="Relationship model">
+					<button type="button" id="layout-links" class="view-button active">Links &amp; TF-IDF</button>
+					<button type="button" id="layout-semantic" class="view-button"${semanticToggleAttrs(graphData)}>Semantic distance</button>
+				</div>
+				<div id="index-notice">
+					<div id="index-notice-text">
+						Semantic clusters need a one-time index of your notes. It runs
+						entirely on this machine.
+					</div>
+					<button type="button" id="build-index">Build semantic index</button>
+				</div>
 				<div id="view-toggle" aria-label="Graph view">
 					<button type="button" id="view-2d" class="view-button">2D</button>
 					<button type="button" id="view-3d" class="view-button active">3D</button>
 				</div>
 				<div id="search-wrapper">
-					<input type="text" id="search-box" placeholder="Search notes..." />
+					<div id="search-mode-toggle" aria-label="Search mode">
+						<button type="button" class="view-button active" data-search-mode="title">Titles</button>
+						<button type="button" class="view-button" data-search-mode="semantic">Meaning</button>
+					</div>
+					<input type="text" id="search-box" placeholder="Search titles..." />
 				</div>
 				<div class="filter-header">
 					<b>Relationships</b>
@@ -406,6 +652,12 @@ function buildDialogHtml(graphData: GraphData): string {
 				<hr />
 				<div id="notebook-filters"></div>
 				<hr />
+				<details id="semantic-details">
+					<summary>Semantic index &amp; parameters</summary>
+					<div id="sem-notice"></div>
+					<div id="semantic-panel"></div>
+				</details>
+				<hr />
 				<div id="stats-line">...</div>
 			</div>
 			<script type="application/json" id="kg-data">${json}</script>
@@ -413,24 +665,112 @@ function buildDialogHtml(graphData: GraphData): string {
 	`;
 }
 
+function log(message: string): void {
+	console.info(`[knowledge-graph] ${message}`);
+}
+
+function describeError(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/** Toasts are unavailable on older Joplin versions; never fail because of one. */
+async function notify(message: string, type: ToastType): Promise<void> {
+	try {
+		await joplin.views.dialogs.showToast({ message, type, duration: 4000 });
+	} catch {
+		log(message);
+	}
+}
+
+/**
+ * Re-embed changed notes shortly after edits stop. Joplin fires note-change
+ * events on every keystroke, so without debouncing a note being typed into
+ * would be re-embedded continuously.
+ */
+const DIRTY_DEBOUNCE_MS = 5000;
+
+/**
+ * Delay before the startup reconciliation sweep, so it never competes with
+ * Joplin's own launch work.
+ */
+const RECONCILE_DELAY_MS = 20000;
+
+async function trackNoteChanges(indexer: Indexer): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+
+	await joplin.workspace.onNoteChange(async (event) => {
+		if (!event?.id) return;
+		await indexer.markDirty(event.id);
+
+		clearTimeout(timer);
+		timer = setTimeout(() => {
+			indexer.drainDirty().catch(err => {
+				log(`Incremental indexing failed: ${describeError(err)}`);
+			});
+		}, DIRTY_DEBOUNCE_MS);
+	});
+
+	// Sync can bring in changes with no per-note event, so compare timestamps
+	// rather than trusting the dirty queue alone.
+	await joplin.workspace.onSyncComplete(() => {
+		indexer.reconcile().catch(err => {
+			log(`Reconciliation failed: ${describeError(err)}`);
+		});
+	});
+
+	// Catch anything that changed while the plugin was not running.
+	setTimeout(() => {
+		indexer.reconcile().catch(err => {
+			log(`Reconciliation failed: ${describeError(err)}`);
+		});
+	}, RECONCILE_DELAY_MS);
+}
+
 joplin.plugins.register({
 	onStart: async function () {
+		await registerSettings();
+
+		// Opening the store is cheap; loading the model is not, and happens only
+		// when something actually needs to embed.
+		const indexer = await Indexer.create();
+		const searchPanel = await SearchPanel.create(indexer);
+		await trackNoteChanges(indexer);
+
+		await joplin.settings.onChange(async () => {
+			await indexer.checkFingerprint();
+		});
+
 		// Create the dialog
 		const dialog = await joplin.views.dialogs.create('knowledge-graph-dialog');
 
 		await joplin.views.dialogs.setFitToContent(dialog, false);
+		// The button id must be one Joplin treats as a "dismiss" button —
+		// UserWebviewDialog.findDismissButton only matches cancel/no/reject, and
+		// that match is what enables the Escape key (both the in-iframe key
+		// handler and the native <dialog> onCancel path). An id of "close"
+		// renders an identical button but leaves Escape dead.
 		await joplin.views.dialogs.setButtons(dialog, [
-			{ id: 'close', title: 'Close' },
+			{ id: 'cancel', title: 'Close' },
 		]);
 
-		// The dialog webview can't navigate joplin:// links itself (sandbox),
-		// so it posts clicked links here. Dialogs share the panel view
-		// controller, so panels.onMessage registers a handler on the dialog.
-		// openItem resolves both internal (:/id) and external links.
+		// Everything the dialog needs from the plugin goes through one handler:
+		// opening links (the webview sandbox cannot navigate joplin:// itself),
+		// reading and writing settings, driving the indexer, recomputing the
+		// semantic view, and running searches. Dialogs share the panel view
+		// controller, so panels.onMessage registers a handler on the dialog, and
+		// the value returned here is what the webview's postMessage resolves to.
+		const controller = new GraphController(
+			indexer,
+			() => searchPanel.reveal(),
+			log,
+		);
+
 		await joplin.views.panels.onMessage(dialog, async (message: any) => {
+			// Older callers sent a bare { link } message.
 			if (message && typeof message.link === 'string') {
-				await joplin.commands.execute('openItem', message.link);
+				return controller.handle({ type: 'link', link: message.link });
 			}
+			return controller.handle(message as GraphRequest);
 		});
 
 		// Register command
@@ -439,10 +779,19 @@ joplin.plugins.register({
 			label: 'Show Knowledge Graph',
 			iconName: 'fas fa-sitemap',
 			execute: async () => {
-				// Build graph data, embed it in the dialog HTML, then open.
-				const graphData = await buildGraphData((msg: string) => {
-					console.info(`[knowledge-graph] ${msg}`);
+				// The graph is built before the modal can be shown, which takes a few
+				// seconds on a large library. Without this the click looks ignored.
+				await notify('Building knowledge graph…', ToastType.Info);
+
+				// The semantic overlay is optional: without an index the graph is
+				// exactly what it always was, so a missing or broken index must not
+				// stop the graph from opening.
+				const overlay = await buildOverlay(indexer, log).catch(err => {
+					log(`Semantic view unavailable: ${describeError(err)}`);
+					return null;
 				});
+
+				const graphData = await buildGraphData(log, overlay);
 
 				await joplin.views.dialogs.setHtml(dialog, buildDialogHtml(graphData));
 				await joplin.views.dialogs.addScript(dialog, './webview/graph.js');
@@ -450,17 +799,77 @@ joplin.plugins.register({
 			},
 		});
 
-		// Toolbar button
+		await joplin.commands.register({
+			name: 'kgBuildIndex',
+			label: 'Build semantic index',
+			execute: async () => {
+				await searchPanel.reveal();
+				await indexer.buildAll();
+			},
+		});
+
+		await joplin.commands.register({
+			name: 'kgRebuildIndex',
+			label: 'Rebuild semantic index from scratch',
+			execute: async () => {
+				await searchPanel.reveal();
+				await indexer.buildAll({ rebuild: true });
+			},
+		});
+
+		await joplin.commands.register({
+			name: 'kgCancelIndex',
+			label: 'Cancel semantic indexing',
+			execute: async () => indexer.cancel(),
+		});
+
+		await joplin.commands.register({
+			name: 'kgToggleSearch',
+			label: 'Toggle semantic search panel',
+			iconName: 'fas fa-search',
+			execute: async () => searchPanel.toggle(),
+		});
+
+		// Verifies the bundled embedding runtime works in the plugin sandbox.
+		await joplin.commands.register({
+			name: 'kgEmbedSelfTest',
+			label: 'Test knowledge graph embedding runtime',
+			execute: async () => {
+				const { lines } = await runSelfTest();
+				for (const line of lines) console.info(`[knowledge-graph] ${line}`);
+				await joplin.views.dialogs.showMessageBox(
+					`Embedding runtime self-test\n\n${lines.join('\n')}`,
+				);
+			},
+		});
+
+		// Toolbar buttons
 		await joplin.views.toolbarButtons.create(
 			'knowledge-graph-button',
 			'showKnowledgeGraph',
 			ToolbarButtonLocation.NoteToolbar,
 		);
 
-		// Tools menu item
+		await joplin.views.toolbarButtons.create(
+			'knowledge-graph-search-button',
+			'kgToggleSearch',
+			ToolbarButtonLocation.NoteToolbar,
+		);
+
+		// Tools menu items
 		await joplin.views.menuItems.create(
 			'knowledge-graph-menu',
 			'showKnowledgeGraph',
 		);
+
+		for (const [id, command] of [
+			['knowledge-graph-search-menu', 'kgToggleSearch'],
+			['knowledge-graph-build-menu', 'kgBuildIndex'],
+			['knowledge-graph-rebuild-menu', 'kgRebuildIndex'],
+			['knowledge-graph-cancel-menu', 'kgCancelIndex'],
+			['knowledge-graph-selftest-menu', 'kgEmbedSelfTest'],
+		]) {
+			await joplin.views.menuItems.create(id, command);
+		}
 	},
 });

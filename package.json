@@ -3,10 +3,11 @@
 	"version": "0.1.0",
 	"description": "Interactive knowledge graph visualization for Joplin notes",
 	"scripts": {
-		"dist": "webpack --env joplin-plugin-config=buildMain && webpack --env joplin-plugin-config=buildExtraScripts && webpack --env joplin-plugin-config=createArchive",
+		"dist": "npm run fetch-model && webpack --env joplin-plugin-config=buildMain && webpack --env joplin-plugin-config=buildExtraScripts && webpack --env joplin-plugin-config=createArchive",
 		"build": "webpack",
-		"install-local": "npm run dist && cp publish/com.seanhinds.knowledge-graph.jpl \"${HOME}/.config/joplin-desktop/plugins/com.seanhinds.knowledge-graph.jpl\" && echo 'Installed to Joplin plugins dir — restart Joplin to load.'",
-		"updateVersion": "webpack --env joplin-plugin-config=updateVersion"
+		"install-local": "npm run dist && cp publish/com.seanhinds.knowledge-graph.jpl \"${HOME}/.config/joplin-desktop/plugins/com.seanhinds.knowledge-graph.jpl\" && echo 'Installed to Joplin plugins dir \u2014 restart Joplin to load.'",
+		"updateVersion": "webpack --env joplin-plugin-config=updateVersion",
+		"fetch-model": "node scripts/fetch-model.mjs"
 	},
 	"keywords": [
 		"joplin-plugin"
@@ -24,6 +25,7 @@
 		"webpack-cli": "^5.1.4"
 	},
 	"dependencies": {
+		"@huggingface/transformers": "^4.2.0",
 		"three": "^0.185.1"
 	}
 }

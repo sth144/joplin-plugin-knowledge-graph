@@ -2,3 +2,6 @@ node_modules/
 dist/
 publish/
 *.jpl
+
+# Fetched at build time by scripts/fetch-model.mjs
+assets/models/

@@ -18,7 +18,7 @@ const STOP_WORDS = new Set([
 ]);
 
 /** Tokenize text into lowercase word tokens, filtering stop words and short tokens. */
-function tokenize(text: string): string[] {
+export function tokenize(text: string): string[] {
 	return text
 		.toLowerCase()
 		.replace(/[^a-z0-9\s-]/g, ' ')
