@@ -1,0 +1,14 @@
+- generic "Filter notes by date" [ref=e4]:
+  - generic [ref=e5]:
+    - generic "Date field" [ref=e6]:
+      - button "Created" [ref=e7] [cursor=pointer]
+      - button "Updated" [ref=e8] [cursor=pointer]
+    - generic [ref=e9]: all created dates
+    - generic [ref=e10] [cursor=pointer]:
+      - checkbox "Hide filtered" [ref=e11]
+      - text: Hide filtered
+    - link "reset" [ref=e12] [cursor=pointer]:
+      - /url: "#"
+  - generic [ref=e13]:
+    - slider "Range start" [ref=e15]
+    - slider "Range end" [ref=e16]

@@ -17,6 +17,7 @@ you get a bird's-eye view of how your thinking is connected.
 - Node size scales with note length
 - Search box to highlight notes by title
 - Notebook filter panel with "all / none" shortcuts
+- Date range slider along the bottom, with a histogram of when notes were written
 - Hover popups showing the note title, notebook path, and a content preview
 - Semantic clustering: switch the graph from links/TF-IDF to embedding similarity
 - Semantic search panel: find notes by meaning, plus "related to this note"
@@ -47,6 +48,30 @@ After installation, open the graph using either:
 The graph builds synchronously when the command is invoked, then the dialog opens.
 For large libraries this may take a few seconds. Press **Escape** or click **Close**
 to dismiss it.
+
+### Navigating the graph
+
+- **Drag empty space** to pan in 2D, or to orbit in 3D (right-drag pans there).
+- **Scroll** to zoom. The zoom-out limit follows the size of the layout, so the
+  whole graph always fits however many notes you have.
+- **Drag a note** to move it. The rest of the graph re-settles around it and the
+  note stays where you dropped it; switching relationship model clears all of
+  those hand placements.
+- **Click a note** to pin its card open.
+
+### Filtering by date
+
+The bar along the bottom filters notes by **Created** or **Updated** date. The
+histogram behind the track shows how many notes fall in each period, so you can
+see where your writing actually clusters before choosing a window. Drag either
+handle to resize the window, or drag the middle to slide it.
+
+Out-of-range notes fade out rather than disappearing, which keeps the layout
+still while you scrub and leaves the surrounding structure readable. Tick **Hide
+filtered** to drop them from the graph entirely and let it re-pack.
+
+Prefer **Created** for "when did this thinking happen" — sync activity tends to
+smear updated timestamps.
 
 ## Semantic Search and Clustering
 

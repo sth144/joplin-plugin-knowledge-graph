@@ -578,6 +578,127 @@ const GRAPH_CSS = `
 	font-size: 10px;
 	margin-top: 8px;
 }
+
+/* Stops short of the control panel so the two never overlap. */
+#timeline {
+	position: fixed;
+	bottom: 12px;
+	left: 12px;
+	right: calc(min(360px, 100vw - 32px) + 32px);
+	background: rgba(10, 10, 30, 0.95);
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	border-radius: 12px;
+	padding: 8px 12px 10px;
+	color: white;
+	z-index: 900;
+	backdrop-filter: blur(12px);
+}
+
+#timeline-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 6px;
+	font-size: 10px;
+}
+
+#timeline-field {
+	display: flex;
+	gap: 3px;
+	padding: 2px;
+	border-radius: 7px;
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#timeline-field .view-button {
+	font-size: 10px;
+	padding: 3px 8px;
+}
+
+#timeline-readout {
+	color: rgba(255, 255, 255, 0.65);
+	font-size: 10px;
+	white-space: nowrap;
+}
+
+#timeline.filtered #timeline-readout {
+	color: #76b7b2;
+}
+
+/* Push the trailing controls to the right edge of the bar. */
+#timeline-hide-label {
+	margin-left: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	color: rgba(255, 255, 255, 0.7);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+#timeline-hide-label input {
+	margin: 0;
+}
+
+#timeline-reset {
+	color: #76b7b2;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+#timeline-reset:hover {
+	text-decoration: underline;
+}
+
+#timeline-track {
+	position: relative;
+	height: 38px;
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.05);
+	touch-action: none;
+	cursor: crosshair;
+}
+
+#timeline-hist {
+	position: absolute;
+	inset: 0;
+	border-radius: 6px;
+	pointer-events: none;
+}
+
+#timeline-selection {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	background: rgba(118, 183, 178, 0.12);
+	border-left: 1px solid rgba(118, 183, 178, 0.55);
+	border-right: 1px solid rgba(118, 183, 178, 0.55);
+	cursor: grab;
+}
+
+#timeline-selection:active {
+	cursor: grabbing;
+}
+
+.timeline-handle {
+	position: absolute;
+	top: -3px;
+	bottom: -3px;
+	width: 11px;
+	margin-left: -5.5px;
+	border-radius: 4px;
+	background: #76b7b2;
+	border: 1px solid rgba(10, 10, 30, 0.8);
+	cursor: ew-resize;
+	touch-action: none;
+}
+
+.timeline-handle:hover,
+.timeline-handle:focus {
+	background: #8fd3ce;
+	outline: none;
+}
 `;
 
 // Build the dialog HTML with the graph data embedded as a non-executed
@@ -659,6 +780,26 @@ function buildDialogHtml(graphData: GraphData): string {
 				</details>
 				<hr />
 				<div id="stats-line">...</div>
+			</div>
+			<div id="timeline" aria-label="Filter notes by date">
+				<div id="timeline-head">
+					<div id="timeline-field" aria-label="Date field">
+						<button type="button" class="view-button active" data-date-field="created">Created</button>
+						<button type="button" class="view-button" data-date-field="updated">Updated</button>
+					</div>
+					<span id="timeline-readout"></span>
+					<label id="timeline-hide-label">
+						<input type="checkbox" id="timeline-hide" />
+						Hide filtered
+					</label>
+					<a href="#" id="timeline-reset">reset</a>
+				</div>
+				<div id="timeline-track">
+					<canvas id="timeline-hist"></canvas>
+					<div id="timeline-selection"></div>
+					<div class="timeline-handle" id="timeline-from" tabindex="0" role="slider" aria-label="Range start"></div>
+					<div class="timeline-handle" id="timeline-to" tabindex="0" role="slider" aria-label="Range end"></div>
+				</div>
 			</div>
 			<script type="application/json" id="kg-data">${json}</script>
 		</div>

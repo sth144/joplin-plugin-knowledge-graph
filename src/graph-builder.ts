@@ -20,6 +20,8 @@ interface JoplinNote {
 	title: string;
 	body: string;
 	parent_id: string;
+	user_created_time: number;
+	user_updated_time: number;
 }
 
 interface JoplinFolder {
@@ -38,6 +40,9 @@ export interface GraphNode {
 	preview: string;
 	noteId: string;
 	body: string;
+	/** Epoch ms, as set by the user rather than by sync. */
+	created: number;
+	updated: number;
 }
 
 export interface GraphEdge {
@@ -247,7 +252,7 @@ export async function buildGraphData(
 	report('Fetching notes...');
 	const notes = await fetchAll<JoplinNote>(
 		['notes'],
-		['id', 'title', 'body', 'parent_id'],
+		['id', 'title', 'body', 'parent_id', 'user_created_time', 'user_updated_time'],
 	);
 	report(`Loaded ${notes.length} notes in ${folders.length} folders`);
 
@@ -279,6 +284,8 @@ export async function buildGraphData(
 			preview,
 			noteId: note.id,
 			body,
+			created: note.user_created_time ?? 0,
+			updated: note.user_updated_time ?? 0,
 		};
 	});
 

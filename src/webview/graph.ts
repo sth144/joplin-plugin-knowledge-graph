@@ -13,6 +13,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { renderMarkdown } from './markdown';
 import { SearchResponse, SemanticPayload, SemanticResponse } from '../graph-messages';
 import { ParamsPanel } from './params';
+import { Timeline, TimelineState } from './timeline';
 
 // Injected by Joplin into plugin webviews (panels and dialogs alike). Used to
 // hand note/link clicks back to the plugin, which runs the openItem command.
@@ -28,6 +29,8 @@ interface GraphNode {
 	preview: string;
 	noteId: string;
 	body: string;
+	created: number;
+	updated: number;
 }
 
 interface GraphEdge {
@@ -69,6 +72,8 @@ interface LayoutNode {
 	baseMaterial: THREE.MeshBasicMaterial;
 	/** Dropped here by the user; the simulation moves everything else around it. */
 	pinned: boolean;
+	/** Outside the date range but still laid out, drawn faded for context. */
+	dimmed: boolean;
 }
 
 interface RenderEdge {
@@ -77,6 +82,8 @@ interface RenderEdge {
 	visible: boolean;
 	/** Which layout this edge belongs to; only one layout is shown at a time. */
 	layout: LayoutMode;
+	/** Opacity from the edge colour, restored when the edge stops being dimmed. */
+	baseOpacity: number;
 }
 
 type ViewMode = '2d' | '3d';
@@ -119,6 +126,9 @@ const UNCLUSTERED_COLOR = '#6b6b7b';
 const NODE_TEXTURE_WIDTH = 320;
 const NODE_TEXTURE_HEIGHT = 120;
 const MAX_LABEL_LINES = 2;
+/** How far notes outside the date range fade, rather than disappearing. */
+const DIMMED_NODE_OPACITY = 0.12;
+const DIMMED_EDGE_FACTOR = 0.12;
 
 async function init(): Promise<void> {
 	const loading = document.getElementById('loading')!;
@@ -411,6 +421,8 @@ class ThreeKnowledgeGraph {
 	/** Node ids matching the current semantic query, or null when not searching. */
 	private semanticMatches: Set<number> | null = null;
 	private noteIdToNodeId = new Map<string, number>();
+	/** Date range control along the bottom edge; absent until mount(). */
+	private timeline: Timeline | null = null;
 
 	public constructor(private graphData: GraphData) {
 		this.scene.background = new THREE.Color('#171726');
@@ -436,6 +448,7 @@ class ThreeKnowledgeGraph {
 		this.setupLighting();
 		this.setupPointerEvents();
 		this.setupControls();
+		this.setupTimeline();
 		this.applyMode('3d');
 		syncEdgeTypeRows(this.layout);
 		this.rebuildClusterVisuals();
@@ -479,6 +492,7 @@ class ThreeKnowledgeGraph {
 				mesh,
 				baseMaterial: material,
 				pinned: false,
+				dimmed: false,
 			};
 			this.nodes.push(layoutNode);
 			this.nodeById.set(node.id, layoutNode);
@@ -508,7 +522,9 @@ class ThreeKnowledgeGraph {
 			});
 			const line = new THREE.Line(geometry, material);
 
-			this.edges.push({ data: edge, line, visible: true, layout });
+			this.edges.push({
+				data: edge, line, visible: true, layout, baseOpacity: opacity,
+			});
 			this.scene.add(line);
 		}
 	}
@@ -589,6 +605,14 @@ class ThreeKnowledgeGraph {
 			if ((this.graphData.semanticEdges ?? []).length === 0) return;
 			this.applyLayout('semantic');
 		});
+	}
+
+	private setupTimeline(): void {
+		this.timeline = new Timeline(
+			this.graphData.nodes,
+			(_state, resettle) => this.applyFilters(resettle),
+		);
+		this.timeline.mount();
 	}
 
 	/**
@@ -909,7 +933,12 @@ class ThreeKnowledgeGraph {
 		this.controls.update();
 	}
 
-	private applyFilters(): void {
+	/**
+	 * `resettle` re-runs the force layout. It is off for date scrubbing: dimmed
+	 * nodes stay in the simulation, so nothing should move while you drag, and
+	 * a graph that reflows on every frame of a drag is unreadable.
+	 */
+	private applyFilters(resettle = true): void {
 		const activeGroups = new Set<string>();
 		document.querySelectorAll<HTMLInputElement>('.nb-filter:checked').forEach(
 			cb => activeGroups.add(cb.dataset.group!),
@@ -922,18 +951,27 @@ class ThreeKnowledgeGraph {
 		const searchBox = document.getElementById('search-box') as HTMLInputElement;
 		const query = searchBox.value.trim().toLowerCase();
 		const visibleIds = new Set<number>();
+		const dateRange = this.timeline?.state();
 
 		for (const node of this.nodes) {
 			const groupMatch = activeGroups.has(node.data.group);
 			const searchMatch = this.searchMode === 'semantic'
 				? this.semanticMatches === null || this.semanticMatches.has(node.data.id)
 				: !query || node.data.label.toLowerCase().includes(query);
-			node.visible = groupMatch && searchMatch;
+			const dateMatch = inDateRange(node.data, dateRange);
+
+			// Out-of-range notes are faded rather than removed unless asked for,
+			// which keeps the layout still and the surrounding structure legible.
+			const hideForDate = !dateMatch && dateRange?.hide === true;
+			node.visible = groupMatch && searchMatch && !hideForDate;
+			node.dimmed = node.visible && !dateMatch;
 			node.mesh.visible = node.visible;
+			(node.mesh.material as THREE.MeshBasicMaterial).opacity =
+				node.dimmed ? DIMMED_NODE_OPACITY : 1;
 			if (node.visible) visibleIds.add(node.data.id);
 		}
 
-		let visibleEdgeCount = 0;
+		let activeEdgeCount = 0;
 		for (const edge of this.edges) {
 			const typeMatch = getEdgeReasonTypes(edge.data).some(
 				type => activeEdgeTypes.has(type),
@@ -944,11 +982,23 @@ class ThreeKnowledgeGraph {
 				visibleIds.has(edge.data.from) &&
 				visibleIds.has(edge.data.to);
 			edge.line.visible = edge.visible;
-			if (edge.visible) visibleEdgeCount++;
+
+			// An edge is only fully in range when both of its endpoints are.
+			const dimmed = edge.visible && (
+				this.nodeById.get(edge.data.from)?.dimmed === true ||
+				this.nodeById.get(edge.data.to)?.dimmed === true
+			);
+			(edge.line.material as THREE.LineBasicMaterial).opacity =
+				dimmed ? edge.baseOpacity * DIMMED_EDGE_FACTOR : edge.baseOpacity;
+			if (edge.visible && !dimmed) activeEdgeCount++;
 		}
 
-		updateStats(visibleIds.size, visibleEdgeCount);
-		this.simulationAlpha = Math.max(this.simulationAlpha, 0.55);
+		// Report what survived the filters, not what is merely on screen.
+		const activeNodeCount = this.nodes.filter(
+			node => node.visible && !node.dimmed,
+		).length;
+		updateStats(activeNodeCount, activeEdgeCount);
+		if (resettle) this.simulationAlpha = Math.max(this.simulationAlpha, 0.55);
 	}
 
 	private animate(): void {
@@ -1282,6 +1332,18 @@ class ThreeKnowledgeGraph {
 		this.camera.updateProjectionMatrix();
 		this.renderer.setSize(width, height, false);
 	}
+}
+
+/**
+ * Notes without the timestamp always pass: a missing date is not evidence that
+ * the note falls outside the window, and silently dropping them would be worse
+ * than showing them.
+ */
+function inDateRange(node: GraphNode, range: TimelineState | undefined): boolean {
+	if (!range) return true;
+	const time = range.field === 'created' ? node.created : node.updated;
+	if (!time) return true;
+	return time >= range.from && time <= range.to;
 }
 
 function createNodeTexture(node: GraphNode): THREE.CanvasTexture {
