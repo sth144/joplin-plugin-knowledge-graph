@@ -390,6 +390,7 @@ class ThreeKnowledgeGraph {
 	private pointerDown = new THREE.Vector2();
 	private searchTimeout: ReturnType<typeof setTimeout> | undefined;
 	private simulationAlpha = 1;
+	private frameCount = 0;
 	private container: HTMLElement | null = null;
 	private layout: LayoutMode = 'links';
 	/** Cluster-coloured node textures, built on first switch to the semantic view. */
@@ -409,6 +410,7 @@ class ThreeKnowledgeGraph {
 		this.controls.enableDamping = true;
 		this.controls.dampingFactor = 0.08;
 		this.controls.minDistance = 120;
+		// Recomputed from the actual layout extent; see updateZoomLimits().
 		this.controls.maxDistance = 1800;
 		this.raycaster.params.Line = { threshold: 8 };
 	}
@@ -823,6 +825,7 @@ class ThreeKnowledgeGraph {
 			this.updateClusterLabelVisibility();
 		}
 
+		// Only the viewing direction matters here; frameAll() picks the distance.
 		if (mode === '2d') {
 			this.camera.position.set(0, 0, 720);
 			this.controls.target.set(0, 0, 0);
@@ -830,6 +833,53 @@ class ThreeKnowledgeGraph {
 			this.camera.position.set(320, -420, 340);
 			this.controls.target.set(0, 0, 0);
 		}
+		this.frameAll();
+	}
+
+	/**
+	 * Distance at which every visible node fits inside the frustum. The layout
+	 * grows with the note count, so a fixed zoom ceiling clips large graphs.
+	 */
+	private fitDistance(): number {
+		const target = this.controls.target;
+		let radius = 0;
+		for (const node of this.nodes) {
+			if (!node.visible) continue;
+			radius = Math.max(radius, node.position.distanceTo(target));
+		}
+		if (radius === 0) return 720;
+
+		// Node cards are billboards, so allow for one sticking out past the edge.
+		radius += 60;
+
+		const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+		const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+		return (radius / Math.sin(Math.min(vFov, hFov) / 2)) * 1.05;
+	}
+
+	/** Keep the zoom-out ceiling and far plane ahead of the current extent. */
+	private updateZoomLimits(): void {
+		const fit = this.fitDistance();
+		this.controls.maxDistance = Math.max(1800, fit * 1.6);
+		const far = Math.max(5000, this.controls.maxDistance * 2);
+		if (far !== this.camera.far) {
+			this.camera.far = far;
+			this.camera.updateProjectionMatrix();
+		}
+	}
+
+	/** Pull the camera back along its current direction until all nodes are in frame. */
+	private frameAll(): void {
+		this.updateZoomLimits();
+
+		const direction = new THREE.Vector3()
+			.subVectors(this.camera.position, this.controls.target);
+		if (direction.lengthSq() === 0) direction.set(0, 0, 1);
+		direction.normalize();
+
+		this.camera.position
+			.copy(this.controls.target)
+			.addScaledVector(direction, this.fitDistance());
 		this.controls.update();
 	}
 
@@ -881,6 +931,8 @@ class ThreeKnowledgeGraph {
 		this.tickLayout();
 		this.updateEdges();
 		this.billboardNodes();
+		// The force layout keeps spreading, so re-derive the ceiling as it settles.
+		if (this.frameCount++ % 30 === 0) this.updateZoomLimits();
 		this.controls.update();
 		this.renderer.render(this.scene, this.camera);
 	}
