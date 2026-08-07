@@ -5,3 +5,6 @@ publish/
 
 # Fetched at build time by scripts/fetch-model.mjs
 assets/models/
+
+# Playwright MCP scratch output
+.playwright-mcp/
