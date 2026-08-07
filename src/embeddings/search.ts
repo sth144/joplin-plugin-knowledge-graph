@@ -23,8 +23,17 @@ export interface SearchHit {
 	snippet: string;
 }
 
-/** Rank-fusion constant; 60 is the value from the original RRF paper. */
-const RRF_K = 60;
+/**
+ * Rank-fusion constant.
+ *
+ * The RRF paper's 60 is tuned for TREC runs of thousands of results. Over a list
+ * of a few dozen it flattens the spread between first and last place to about
+ * 1.2x, which the keyword/semantic weight ratio then swamps: no keyword-only hit
+ * can outscore even the worst semantic one, so blending quietly does nothing and
+ * the search is purely semantic whatever the blend is set to. A small constant
+ * keeps the spread wide enough for the weight to behave as documented.
+ */
+const RRF_K = 1;
 
 const SNIPPET_CHARS = 220;
 

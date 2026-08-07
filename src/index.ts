@@ -754,7 +754,7 @@ function buildDialogHtml(graphData: GraphData): string {
 				<div id="search-wrapper">
 					<div id="search-mode-toggle" aria-label="Search mode">
 						<button type="button" class="view-button active" data-search-mode="title">Titles</button>
-						<button type="button" class="view-button" data-search-mode="semantic">Meaning</button>
+						<button type="button" class="view-button" data-search-mode="semantic" title="Searches by meaning and blends in Joplin's keyword search, so paraphrases and exact strings like ticket numbers both match. Adjust the mix with 'Keyword search blend' in settings.">Meaning</button>
 					</div>
 					<input type="text" id="search-box" placeholder="Search titles..." />
 				</div>
