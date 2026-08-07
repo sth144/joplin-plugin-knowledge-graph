@@ -67,6 +67,8 @@ interface LayoutNode {
 	mesh: THREE.Mesh;
 	/** Notebook-coloured material, restored when leaving the semantic view. */
 	baseMaterial: THREE.MeshBasicMaterial;
+	/** Dropped here by the user; the simulation moves everything else around it. */
+	pinned: boolean;
 }
 
 interface RenderEdge {
@@ -391,6 +393,13 @@ class ThreeKnowledgeGraph {
 	private searchTimeout: ReturnType<typeof setTimeout> | undefined;
 	private simulationAlpha = 1;
 	private frameCount = 0;
+	/** Node currently held by the pointer, if any. */
+	private draggedNode: LayoutNode | null = null;
+	/** Plane the held node slides along, facing the camera through its start point. */
+	private readonly dragPlane = new THREE.Plane();
+	/** Grab point relative to the node centre, so it doesn't snap under the cursor. */
+	private readonly dragOffset = new THREE.Vector3();
+	private readonly dragHit = new THREE.Vector3();
 	private container: HTMLElement | null = null;
 	private layout: LayoutMode = 'links';
 	/** Cluster-coloured node textures, built on first switch to the semantic view. */
@@ -409,6 +418,8 @@ class ThreeKnowledgeGraph {
 		this.controls = new OrbitControls(this.camera, this.renderer.domElement);
 		this.controls.enableDamping = true;
 		this.controls.dampingFactor = 0.08;
+		// Pan in the plane of the screen rather than along the ground plane.
+		this.controls.screenSpacePanning = true;
 		this.controls.minDistance = 120;
 		// Recomputed from the actual layout extent; see updateZoomLimits().
 		this.controls.maxDistance = 1800;
@@ -467,6 +478,7 @@ class ThreeKnowledgeGraph {
 				visible: true,
 				mesh,
 				baseMaterial: material,
+				pinned: false,
 			};
 			this.nodes.push(layoutNode);
 			this.nodeById.set(node.id, layoutNode);
@@ -509,9 +521,10 @@ class ThreeKnowledgeGraph {
 		const canvas = this.renderer.domElement;
 		canvas.addEventListener('pointermove', (event) => this.onPointerMove(event));
 		canvas.addEventListener('pointerleave', () => this.hideHoverPopup());
-		canvas.addEventListener('pointerdown', (event) => {
-			this.pointerDown.set(event.clientX, event.clientY);
-		});
+		canvas.addEventListener('pointerdown', (event) => this.onPointerDown(event));
+		// On window, so a release outside the canvas still ends the drag.
+		window.addEventListener('pointerup', (event) => this.endNodeDrag(event));
+		window.addEventListener('pointercancel', (event) => this.endNodeDrag(event));
 		canvas.addEventListener('click', (event) => this.onClick(event));
 
 		document.getElementById('popup-close')!.addEventListener('click', () => {
@@ -600,7 +613,9 @@ class ThreeKnowledgeGraph {
 
 		// Re-run the force simulation: a different edge set implies a different
 		// resting shape, and leaving nodes where the old edges put them would
-		// misrepresent the new one.
+		// misrepresent the new one. Hand-placed pins belong to the old shape too,
+		// so switching layouts is also how you clear them.
+		for (const node of this.nodes) node.pinned = false;
 		this.simulationAlpha = 1;
 		this.applyFilters();
 	}
@@ -814,6 +829,17 @@ class ThreeKnowledgeGraph {
 		this.mode = mode;
 		this.simulationAlpha = Math.max(this.simulationAlpha, 0.8);
 		this.controls.enableRotate = mode === '3d';
+		// Rotating is meaningless in 2D, so drag pans there; in 3D drag still
+		// orbits and panning stays on the right button.
+		this.controls.mouseButtons = {
+			LEFT: mode === '2d' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
+			MIDDLE: THREE.MOUSE.DOLLY,
+			RIGHT: THREE.MOUSE.PAN,
+		};
+		this.controls.touches = {
+			ONE: mode === '2d' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE,
+			TWO: THREE.TOUCH.DOLLY_PAN,
+		};
 
 		document.getElementById('view-2d')?.classList.toggle('active', mode === '2d');
 		document.getElementById('view-3d')?.classList.toggle('active', mode === '3d');
@@ -985,6 +1011,12 @@ class ThreeKnowledgeGraph {
 			&& separation > 0;
 
 		for (const node of visibleNodes) {
+			// Dragged/dropped nodes still push on their neighbours but stay put.
+			if (node.pinned) {
+				node.velocity.set(0, 0, 0);
+				continue;
+			}
+
 			const anchor = useAnchors
 				? this.clusterAnchors.get(clusters[node.data.id] ?? -1)
 				: undefined;
@@ -1065,7 +1097,78 @@ class ThreeKnowledgeGraph {
 		return visibleEdges.find(edge => edge.line === line) || null;
 	}
 
+	/**
+	 * Left-drag grabs a node if the pointer is over one, otherwise it falls
+	 * through to OrbitControls and pans (or rotates, in 3D) the camera.
+	 */
+	private onPointerDown(event: PointerEvent): void {
+		this.pointerDown.set(event.clientX, event.clientY);
+		if (event.button !== 0) return;
+
+		const node = this.pickNode(event.clientX, event.clientY);
+		if (!node) return;
+
+		this.draggedNode = node;
+		node.pinned = true;
+		node.velocity.set(0, 0, 0);
+
+		// Slide along a plane facing the camera so the node tracks the cursor
+		// at its current depth, whatever angle we're viewing from.
+		const normal = this.mode === '2d'
+			? new THREE.Vector3(0, 0, 1)
+			: this.camera.getWorldDirection(new THREE.Vector3()).negate();
+		this.dragPlane.setFromNormalAndCoplanarPoint(normal, node.position);
+
+		if (this.raycastDragPlane(event.clientX, event.clientY)) {
+			this.dragOffset.subVectors(node.position, this.dragHit);
+		} else {
+			this.dragOffset.set(0, 0, 0);
+		}
+
+		// Let the node move without the camera moving with it. OrbitControls has
+		// already taken pointer capture on its own pointerdown, so move events
+		// keep reaching the canvas even when the cursor leaves it.
+		this.controls.enabled = false;
+		this.renderer.domElement.style.cursor = 'grabbing';
+	}
+
+	private endNodeDrag(event: PointerEvent): void {
+		if (!this.draggedNode) return;
+
+		// A press that never moved is a click, not a drag: don't strand the node.
+		// Anything actually dragged keeps its pin so the new arrangement sticks.
+		const moved = this.pointerDown.distanceTo(
+			new THREE.Vector2(event.clientX, event.clientY),
+		) > 5;
+		if (!moved) this.draggedNode.pinned = false;
+
+		this.draggedNode = null;
+		this.controls.enabled = true;
+		this.renderer.domElement.style.cursor = '';
+		// Let the rest of the graph settle around where it was dropped.
+		this.simulationAlpha = Math.max(this.simulationAlpha, 0.5);
+	}
+
+	/** Project a screen position onto the active drag plane into `dragHit`. */
+	private raycastDragPlane(clientX: number, clientY: number): boolean {
+		const rect = this.renderer.domElement.getBoundingClientRect();
+		this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+		this.pointer.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
+		this.raycaster.setFromCamera(this.pointer, this.camera);
+		return this.raycaster.ray.intersectPlane(this.dragPlane, this.dragHit) !== null;
+	}
+
 	private onPointerMove(event: PointerEvent): void {
+		if (this.draggedNode) {
+			if (this.raycastDragPlane(event.clientX, event.clientY)) {
+				this.draggedNode.position.copy(this.dragHit).add(this.dragOffset);
+				this.draggedNode.velocity.set(0, 0, 0);
+				// Keep the neighbours reacting for as long as the drag lasts.
+				this.simulationAlpha = Math.max(this.simulationAlpha, 0.35);
+			}
+			return;
+		}
+
 		// The pinned popup takes over; don't fight it with hover previews.
 		if (this.pinnedNode) return;
 
