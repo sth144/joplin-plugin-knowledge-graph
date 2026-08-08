@@ -80,43 +80,76 @@ const FIELDS: Field[] = [
 	{
 		key: 'kg.neighbours', label: 'Neighbours per note', kind: 'int',
 		group: 'cluster', min: 1, max: 50,
-		help: 'How many nearest notes each note may link to.',
+		help: 'How many nearest notes each note may link to — the main density ' +
+			'control. Raise it for a denser graph with more paths to follow, lower ' +
+			'it for a sparser one that is easier to read.',
 	},
 	{
 		key: 'kg.minCosine', label: 'Minimum similarity for an edge', kind: 'unit',
 		group: 'cluster',
-		help: 'Values bunch in 0.3-0.6, so small changes matter.',
+		help: 'Edges weaker than this are dropped. Raise it to keep only strong ' +
+			'matches, lower it to surface loose associations. Real values bunch ' +
+			'between 0.3 and 0.6, so move it in steps of about 0.05.',
 	},
 	{
 		key: 'kg.mutualOnly', label: 'Mutual neighbours only', kind: 'bool',
 		group: 'cluster',
-		help: 'Require both notes to count each other as near.',
+		help: 'Keep an edge only when both notes count each other as near. On, this ' +
+			'removes hub notes that everything links to but which link back to ' +
+			'nothing in particular.',
 	},
 	{
 		key: 'kg.pooling', label: 'Compare notes by', kind: 'enum', group: 'cluster',
 		options: { 'max-chunk': 'Best matching passage', mean: 'Whole-note average' },
+		help: 'Best matching passage joins notes that share one specific topic, even ' +
+			'if the rest is unrelated — good for long, mixed notes. Whole-note ' +
+			'average compares overall subject matter instead.',
 	},
 
 	// Search — read per query.
 	{
 		key: 'kg.searchLimit', label: 'Search results', kind: 'int',
 		group: 'search', min: 1, max: 200,
+		help: 'How many notes the "Meaning" search keeps. Everything else in the ' +
+			'graph is dimmed while a search is active.',
 	},
 	{
 		key: 'kg.searchMinScore', label: 'Minimum search score', kind: 'unit',
 		group: 'search',
-		help: 'Ignored while keyword blending is above 0.',
+		help: 'Hides weak matches. Ignored while Keyword blend is above 0, because a ' +
+			'keyword-only hit has no similarity score to compare against.',
 	},
 	{
 		key: 'kg.keywordBlend', label: 'Keyword blend', kind: 'unit', group: 'search',
-		help: '0 is pure meaning-based. Raise it for exact strings like ticket ids.',
+		help: 'How much Joplin\'s own keyword search counts against meaning-based ' +
+			'search. 0 is pure meaning, which is nearly blind to exact strings like ' +
+			'ticket keys or file paths. Raise it towards 0.5 when you search for ' +
+			'identifiers, lower it when you search by description.',
 	},
 ];
 
 const GROUP_TITLES: Record<Group, string> = {
 	index: 'Vectorization',
-	cluster: 'Clustering & edges',
-	search: 'Search',
+	cluster: 'Semantic graph — clusters & edges',
+	search: 'Meaning search',
+};
+
+/**
+ * Shown under each group heading. These say what the group actually does and,
+ * more importantly, what else you have to do for a change to become visible —
+ * which is not guessable from the field names alone.
+ */
+const GROUP_NOTES: Record<Group, string> = {
+	index: 'Changing these requires re-vectorizing, which re-reads every note.',
+	cluster:
+		'Builds the graph you browse in "Semantic distance" — switch to it with the ' +
+		'toggle at the top of this panel. Edges join notes the model reads as ' +
+		'similar, so these fields are how you widen or tighten what the graph ' +
+		'connects. Press "Recompute clusters" above to apply a change.',
+	search:
+		'Applies to the search box above when it is set to "Meaning". That search is ' +
+		'already hybrid: it blends similarity with Joplin\'s keyword search, so ' +
+		'paraphrases and exact strings both match.',
 };
 
 const POLL_INTERVAL_MS = 1200;
@@ -253,13 +286,10 @@ export class ParamsPanel {
 		summary.textContent = GROUP_TITLES[group];
 		section.appendChild(summary);
 
-		if (group === 'index') {
-			const note = document.createElement('div');
-			note.className = 'sem-group-note';
-			note.textContent =
-				'Changing these requires re-vectorizing, which re-reads every note.';
-			section.appendChild(note);
-		}
+		const note = document.createElement('div');
+		note.className = 'sem-group-note';
+		note.textContent = GROUP_NOTES[group];
+		section.appendChild(note);
 
 		for (const field of FIELDS.filter(f => f.group === group)) {
 			section.appendChild(this.buildField(field));
@@ -275,7 +305,14 @@ export class ParamsPanel {
 		const label = document.createElement('label');
 		label.textContent = field.label;
 		label.htmlFor = `sem-${field.key}`;
-		if (field.help) label.title = field.help;
+
+		// The badge sits beside the label rather than inside it: a click inside a
+		// <label> is forwarded to the control, which would toggle the checkboxes.
+		const labelWrap = document.createElement('span');
+		labelWrap.className = 'sem-label';
+		labelWrap.appendChild(label);
+		const badge = buildHelpBadge(field);
+		if (badge) labelWrap.appendChild(badge);
 
 		const input = this.buildInput(field);
 		input.id = `sem-${field.key}`;
@@ -283,9 +320,9 @@ export class ParamsPanel {
 
 		if (field.kind === 'bool') {
 			row.appendChild(input);
-			row.appendChild(label);
+			row.appendChild(labelWrap);
 		} else {
-			row.appendChild(label);
+			row.appendChild(labelWrap);
 			row.appendChild(input);
 		}
 
@@ -429,6 +466,60 @@ export class ParamsPanel {
 	private async request<T>(message: unknown): Promise<T> {
 		return await this.options.request(message) as T;
 	}
+}
+
+/** A "?" next to a label that reveals the field's help on hover or focus. */
+function buildHelpBadge(field: Field): HTMLElement | null {
+	if (!field.help) return null;
+
+	const badge = document.createElement('span');
+	badge.className = 'param-help';
+	badge.textContent = '?';
+	badge.tabIndex = 0;
+	// Carries the text for screen readers, which cannot hover.
+	badge.setAttribute('aria-label', `${field.label}: ${field.help}`);
+
+	const show = (): void => showHelpTooltip(badge, field.help!);
+	badge.addEventListener('mouseenter', show);
+	badge.addEventListener('focus', show);
+	badge.addEventListener('mouseleave', hideHelpTooltip);
+	badge.addEventListener('blur', hideHelpTooltip);
+
+	return badge;
+}
+
+let helpTooltip: HTMLElement | null = null;
+
+function showHelpTooltip(anchor: HTMLElement, text: string): void {
+	if (!helpTooltip) {
+		helpTooltip = document.createElement('div');
+		helpTooltip.id = 'param-tooltip';
+		document.body.appendChild(helpTooltip);
+	}
+
+	helpTooltip.textContent = text;
+	// Make it visible before measuring; it has display:none until then.
+	helpTooltip.classList.add('visible');
+
+	const rect = anchor.getBoundingClientRect();
+	const { offsetWidth: width, offsetHeight: height } = helpTooltip;
+
+	// Prefer the left side: the control panel is pinned to the right edge, so a
+	// tooltip placed to the right of the badge would run off screen.
+	let left = rect.left - width - 10;
+	if (left < 8) left = Math.min(rect.right + 10, window.innerWidth - width - 8);
+
+	const top = Math.max(
+		8,
+		Math.min(rect.top + rect.height / 2 - height / 2, window.innerHeight - height - 8),
+	);
+
+	helpTooltip.style.left = `${left}px`;
+	helpTooltip.style.top = `${top}px`;
+}
+
+function hideHelpTooltip(): void {
+	helpTooltip?.classList.remove('visible');
 }
 
 function clampInt(raw: string, field: Field): number {

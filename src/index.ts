@@ -525,6 +525,64 @@ const GRAPH_CSS = `
 	line-height: 1.35;
 }
 
+/* Keeps the row a two-child flex layout so space-between still works. */
+.sem-label {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 5px;
+	min-width: 0;
+}
+
+.sem-field-bool .sem-label {
+	flex: 1;
+}
+
+.param-help {
+	flex: none;
+	width: 13px;
+	height: 13px;
+	border-radius: 50%;
+	background: rgba(255, 255, 255, 0.14);
+	border: 1px solid rgba(255, 255, 255, 0.22);
+	color: rgba(255, 255, 255, 0.75);
+	font-size: 9px;
+	line-height: 12px;
+	text-align: center;
+	cursor: help;
+	user-select: none;
+}
+
+.param-help:hover,
+.param-help:focus {
+	background: rgba(118, 183, 178, 0.4);
+	color: #fff;
+	outline: none;
+}
+
+/*
+ * Lives on <body> and is positioned in script: the control panel scrolls, so a
+ * tooltip positioned inside it would be clipped by the overflow.
+ */
+#param-tooltip {
+	display: none;
+	position: fixed;
+	z-index: 3000;
+	max-width: 260px;
+	padding: 8px 10px;
+	background: rgba(8, 8, 24, 0.98);
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 8px;
+	color: rgba(255, 255, 255, 0.92);
+	font-size: 11px;
+	line-height: 1.45;
+	box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+	pointer-events: none;
+}
+
+#param-tooltip.visible {
+	display: block;
+}
+
 .sem-field input[type="number"],
 .sem-field select {
 	width: 84px;
