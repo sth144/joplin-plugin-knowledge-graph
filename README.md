@@ -31,7 +31,7 @@ you get a bird's-eye view of how your thinking is connected.
 
 **Option 1 — Install from file**
 
-1. Download the latest `.jpl` file from the [Releases](https://github.com/seanhinds/joplin-plugin-knowledge-graph/releases) page.
+1. Download the latest `.jpl` file from the [Releases](https://github.com/sth144/joplin-plugin-knowledge-graph/releases) page.
 2. In Joplin: **Settings > Plugins > Install from file**, select the `.jpl` file.
 3. Restart Joplin.
 
@@ -227,7 +227,7 @@ const SIMILARITY_THRESHOLD = 0.15;
 Prerequisites: Node.js >= 18, npm.
 
 ```bash
-git clone https://github.com/seanhinds/joplin-plugin-knowledge-graph.git
+git clone https://github.com/sth144/joplin-plugin-knowledge-graph.git
 cd joplin-plugin-knowledge-graph
 npm install
 npm run dist

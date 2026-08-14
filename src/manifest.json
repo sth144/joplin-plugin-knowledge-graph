@@ -6,5 +6,5 @@
 	"name": "Knowledge Graph",
 	"description": "Interactive knowledge graph visualization of all notes, connected by content similarity, shared references, and internal links.",
 	"author": "Sean Hinds",
-	"homepage_url": "https://github.com/seanhinds/joplin-plugin-knowledge-graph"
+	"homepage_url": "https://github.com/sth144/joplin-plugin-knowledge-graph"
 }
