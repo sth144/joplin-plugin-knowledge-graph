@@ -2,7 +2,10 @@
 
 An interactive knowledge graph for Joplin that maps relationships across all your notes.
 
-![Knowledge Graph](docs/screenshot.png)
+![Knowledge Graph](docs/demo.gif)
+
+_Recorded against a synthetic note library — every title, notebook and cluster
+label above is made up._
 
 ## What It Does
 
